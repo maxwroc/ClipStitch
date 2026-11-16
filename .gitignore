@@ -1,0 +1,10 @@
+bin/
+obj/
+publish/
+tests/bin/
+tests/obj/
+.vs/
+*.user
+TestResults/
+# Third-party FFmpeg binaries (~200 MB) are downloaded separately; see README "Build".
+tools/ffmpeg/

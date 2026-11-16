@@ -1,0 +1,207 @@
+<Window x:Class="ClipStitch.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
+        Title="ClipStitch" Height="820" Width="1280" MinWidth="950" MinHeight="650"
+        Background="#0C1729" Foreground="#E7F1FA" FontFamily="Segoe UI">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Margin" Value="3"/><Setter Property="Padding" Value="12,7"/>
+            <Setter Property="Background" Value="#223A55"/><Setter Property="Foreground" Value="#E7F1FA"/>
+            <Setter Property="BorderBrush" Value="#385570"/><Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value><ControlTemplate TargetType="Button">
+                    <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="#355A78"/></Trigger>
+                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Background" Value="#1C806B"/></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate></Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/></Style>
+        <Style TargetType="TextBox"><Setter Property="Margin" Value="3"/><Setter Property="Padding" Value="5"/><Setter Property="Background" Value="#1A3048"/><Setter Property="Foreground" Value="#E7F1FA"/><Setter Property="CaretBrush" Value="#E7F1FA"/><Setter Property="BorderBrush" Value="#496681"/></Style>
+        <Style TargetType="ComboBox"><Setter Property="Margin" Value="3"/><Setter Property="Padding" Value="5"/></Style>
+        <Style TargetType="CheckBox"><Setter Property="VerticalAlignment" Value="Center"/></Style>
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="6"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value><ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="ItemSurface" Background="Transparent" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="#29455E"/></Trigger>
+                        <Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="#276455"/><Setter Property="Foreground" Value="White"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate></Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,8">
+            <Button Content="Open folder…" Click="OpenFolder_Click" DockPanel.Dock="Left"/>
+            <TextBlock x:Name="FolderLabel" Text="Choose a folder containing videos" TextTrimming="CharacterEllipsis" Margin="10,0"/>
+        </DockPanel>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <DockPanel Grid.Column="0">
+                <TextBlock Text="VIDEOS (filename order)" FontWeight="Bold" Margin="3,0,0,8" DockPanel.Dock="Top"/>
+                <ListBox x:Name="VideoList" SelectionChanged="VideoList_SelectionChanged" Background="#14263C" Foreground="White" BorderThickness="0">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <DockPanel Margin="3">
+                                <CheckBox IsChecked="{Binding Included, Mode=TwoWay}" Click="Include_Click" DockPanel.Dock="Left" Margin="0,0,8,0"/>
+                                <TextBlock Text="{Binding Description}" TextWrapping="Wrap"/>
+                            </DockPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Border Background="Black" MinHeight="160">
+                    <vlc:VideoView x:Name="VideoView">
+                        <Grid x:Name="FrameCover" Background="Black" Visibility="Collapsed">
+                            <Image x:Name="FrameCoverImage" Stretch="Uniform"/>
+                        </Grid>
+                    </vlc:VideoView>
+                </Border>
+                <StackPanel Grid.Row="1">
+                    <DockPanel Margin="0,4">
+                        <Button Click="PlayClip_Click" ToolTip="Play from selection: start at the selected section and continue through following kept sections" AutomationProperties.Name="Play from selection">
+                            <Grid Width="24" Height="20">
+                                <Path Data="M 5,2 L 1,2 L 1,18 L 5,18 M 19,2 L 23,2 L 23,18 L 19,18"
+                                      Stroke="#65FFA8" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                <Path Data="M 9,4 L 18,10 L 9,16 Z" Fill="#65FFA8"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="ContinueButton" Click="Continue_Click" IsEnabled="False" ToolTip="Continue: after a handle-drag preview, keep playing the selected sections from here" AutomationProperties.Name="Continue playing selected sections">
+                            <Grid Width="26" Height="20">
+                                <Path Data="M 1,2 L 5,2 L 5,18 L 1,18" Stroke="#65FFA8" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                <Path Data="M 9,4 L 16,10 L 9,16 Z M 17,4 L 24,10 L 17,16 Z" Fill="#65FFA8"/>
+                            </Grid>
+                        </Button>
+                        <Button Content="&#x23EE;  &#x25B6;" Click="Preview_Click" ToolTip="Preview all sections from the beginning" AutomationProperties.Name="Preview all sections" FontSize="16"/>
+                        <Button Content="&#x23EF;" Click="Pause_Click" ToolTip="Pause or resume" AutomationProperties.Name="Pause or resume" FontSize="16"/>
+                        <Button Content="&#x25A0;" Click="Stop_Click" ToolTip="Stop" AutomationProperties.Name="Stop" FontSize="16"/>
+                        <Button x:Name="ExportButton" Click="Export_Click" DockPanel.Dock="Right" Background="#1C806B" BorderBrush="#3FC48A"
+                                ToolTip="Join the kept sections into one compressed MP4 file, using the quality settings below" AutomationProperties.Name="Save joined video">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="M 1,1 L 13,1 L 17,5 L 17,17 L 1,17 Z M 4,1 L 4,6 L 12,6 L 12,1 M 4,17 L 4,11 L 14,11 L 14,17"
+                                      Stroke="#E7F1FA" StrokeThickness="1.6" StrokeLineJoin="Round" VerticalAlignment="Center"/>
+                                <TextBlock Text="Save joined video…" Margin="8,0,0,0" FontWeight="SemiBold"/>
+                            </StackPanel>
+                        </Button>
+                        <TextBlock x:Name="PlaybackLabel" Text="Select a video" Margin="10,0"/>
+                    </DockPanel>
+                    <Slider x:Name="PositionSlider" Minimum="0" Maximum="1" ValueChanged="PositionSlider_ValueChanged"
+                            PreviewMouseLeftButtonUp="PositionSlider_MouseUp"/>
+                    <DockPanel Margin="3,0,3,5">
+                        <TextBlock x:Name="ZoomLabel" DockPanel.Dock="Right" Foreground="#A7C0D3" Text="100%"/>
+                        <TextBlock Text="TIMELINE  ·  Scroll to zoom at cursor  ·  Drag handles to trim" Foreground="#A7C0D3" FontSize="11"/>
+                    </DockPanel>
+                    <Border BorderBrush="#35516B" BorderThickness="1" CornerRadius="6" Background="#101E30" ClipToBounds="True">
+                        <Grid>
+                        <ScrollViewer x:Name="TimelineScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                      SizeChanged="TimelineScroll_SizeChanged" ScrollChanged="TimelineScroll_ScrollChanged" PreviewMouseWheel="TimelineScroll_MouseWheel"
+                                      Thumb.DragStarted="TimelineScroll_DragStarted" Thumb.DragCompleted="TimelineScroll_DragCompleted">
+                            <ScrollViewer.Resources>
+                                <Style x:Key="ScrollPageButton" TargetType="RepeatButton">
+                                    <Setter Property="Focusable" Value="False"/><Setter Property="IsTabStop" Value="False"/>
+                                    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RepeatButton">
+                                        <Border Background="Transparent"/>
+                                    </ControlTemplate></Setter.Value></Setter>
+                                </Style>
+                                <Style x:Key="ScrollThumb" TargetType="Thumb">
+                                    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Thumb">
+                                        <Border x:Name="ThumbSurface" Background="#4A6F92" CornerRadius="6" Margin="0,3"/>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbSurface" Property="Background" Value="#3FC48A"/></Trigger>
+                                            <Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbSurface" Property="Background" Value="#65FFA8"/></Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate></Setter.Value></Setter>
+                                </Style>
+                                <Style TargetType="ScrollBar">
+                                    <Setter Property="Height" Value="20"/><Setter Property="MinHeight" Value="20"/>
+                                    <Setter Property="Background" Value="#0E1B2C"/>
+                                    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
+                                        <Border Background="{TemplateBinding Background}" CornerRadius="8" Margin="4,2">
+                                            <Track x:Name="PART_Track" IsDirectionReversed="False">
+                                                <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageLeftCommand"/></Track.DecreaseRepeatButton>
+                                                <Track.Thumb><Thumb Style="{StaticResource ScrollThumb}" MinWidth="24"/></Track.Thumb>
+                                                <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageRightCommand"/></Track.IncreaseRepeatButton>
+                                            </Track>
+                                        </Border>
+                                    </ControlTemplate></Setter.Value></Setter>
+                                </Style>
+                            </ScrollViewer.Resources>
+                            <Grid x:Name="Timeline" Height="96" Background="#091321" ClipToBounds="True" UseLayoutRounding="True" SnapsToDevicePixels="True" SizeChanged="Timeline_SizeChanged" MouseLeftButtonDown="Timeline_MouseDown">
+                                <Canvas x:Name="Thumbnails" IsHitTestVisible="False"/>
+                                <Canvas x:Name="RangeOverlay"/>
+                                <Canvas x:Name="PlayheadOverlay" IsHitTestVisible="False"/>
+                            </Grid>
+                        </ScrollViewer>
+                        <Grid x:Name="ThumbnailLoadingBadge" Visibility="Collapsed" Background="#B0081120" VerticalAlignment="Top"
+                              Height="{Binding ActualHeight, ElementName=Timeline}"
+                              MouseWheel="ThumbnailLoading_MouseWheel" Cursor="Wait">
+                        <Border HorizontalAlignment="Center" VerticalAlignment="Center"
+                                Background="#F00C1729" BorderBrush="#65FFA8" BorderThickness="1" CornerRadius="10" Padding="12,6">
+                            <StackPanel Orientation="Horizontal">
+                                <ProgressBar x:Name="ThumbnailLoadingProgress" Width="80" Height="6" IsIndeterminate="True"
+                                             Foreground="#65FFA8" Background="#223A55" BorderThickness="0" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="ThumbnailLoadingText" Text="Loading previews…" Margin="8,0,0,0" FontSize="12" Foreground="#E7F1FA"/>
+                            </StackPanel>
+                        </Border>
+                        </Grid>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+                <WrapPanel Grid.Row="3" Margin="0,6,0,0">
+                    <TextBlock Text="Start"/>
+                    <TextBox x:Name="StartText" Width="110" Text="00:00:00.000" LostFocus="RangeText_LostFocus"/>
+                    <Button Content="Use playhead" Click="SetStart_Click"/>
+                    <TextBlock Text="End" Margin="12,0,0,0"/>
+                    <TextBox x:Name="EndText" Width="110" Text="00:00:00.000" LostFocus="RangeText_LostFocus"/>
+                    <Button Content="Use playhead" Click="SetEnd_Click"/>
+                    <Button Content="New section (split)" Click="AddRange_Click"/>
+                    <Button x:Name="JoinPreviousButton" Content="Join back with previous" Click="JoinPrevious_Click" IsEnabled="False"/>
+                    <Button x:Name="JoinNextButton" Content="Join back with next" Click="JoinNext_Click" IsEnabled="False"/>
+                    <Button Content="Update selected" Click="UpdateRange_Click"/>
+                    <Button Content="Remove selected" Click="RemoveRange_Click"/>
+                </WrapPanel>
+                <DockPanel Grid.Row="4" Margin="0,4,0,0">
+                    <TextBlock Text="KEEP SECTIONS" FontWeight="Bold" DockPanel.Dock="Left" Margin="3,0,10,0"/>
+                    <ListBox x:Name="RangeList" Height="58" SelectionChanged="RangeList_SelectionChanged" PreviewMouseLeftButtonUp="RangeList_MouseUp"
+                             Background="#14263C" Foreground="White" BorderThickness="0" DisplayMemberPath="Description"/>
+                </DockPanel>
+            </Grid>
+        </Grid>
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <WrapPanel>
+                <TextBlock Text="Quality (lower = better)"/>
+                <ComboBox x:Name="QualityBox" Width="65" SelectedIndex="3">
+                    <ComboBoxItem Content="18"/><ComboBoxItem Content="19"/><ComboBoxItem Content="20"/>
+                    <ComboBoxItem Content="21"/><ComboBoxItem Content="22"/><ComboBoxItem Content="23"/>
+                </ComboBox>
+                <TextBlock Text="Encoding speed" Margin="12,0,0,0"/>
+                <ComboBox x:Name="PresetBox" Width="115" SelectedIndex="2">
+                    <ComboBoxItem Content="veryfast"/><ComboBoxItem Content="fast"/><ComboBoxItem Content="medium"/>
+                    <ComboBoxItem Content="slow"/><ComboBoxItem Content="slower"/>
+                </ComboBox>
+            </WrapPanel>
+            <TextBlock Grid.Row="1" x:Name="StatusLabel" Text="Ready" Foreground="#b8c2d1" TextWrapping="Wrap" Margin="3,4,0,0"/>
+        </Grid>
+    </Grid>
+</Window>
