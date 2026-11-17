@@ -104,7 +104,8 @@ public static class MediaTools
         double fps = rate.Length == 2 && ParseDouble(rate[1]) != 0 ? ParseDouble(rate[0]) / ParseDouble(rate[1]) : 0;
         if (!double.IsFinite(fps) || fps <= 0 || fps > 240) fps = 30;
         var audio = streams.FirstOrDefault(s => GetString(s, "codec_type") == "audio");
-        var itemResult = new VideoItem { Path = path, Duration = duration, Width = width, Height = height,
+        var itemResult = new VideoItem { Path = path, ContainerFormat = GetString(root.GetProperty("format"), "format_name"),
+            Duration = duration, Width = width, Height = height,
             FrameRate = fps, HasAudio = audio.ValueKind != JsonValueKind.Undefined,
             VideoStreamIndex = video.GetProperty("index").GetInt32(),
             AudioStreamIndex = audio.ValueKind == JsonValueKind.Undefined ? 0 : audio.GetProperty("index").GetInt32() };

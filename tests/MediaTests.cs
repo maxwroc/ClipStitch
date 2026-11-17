@@ -239,6 +239,59 @@ public class MediaTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task IndexedPreviewPreservesFramesAndLeavesExportOnTheOriginal(bool hasAudio)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "ClipStitch-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string source = Path.Combine(directory, "source.dat");
+            string destination = Path.Combine(directory, "export.mp4");
+            var args = new List<string> { "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=6" };
+            if (hasAudio) args.AddRange(["-f", "lavfi", "-i", "sine=frequency=440:duration=6"]);
+            args.AddRange(["-c:v", "libx264"]);
+            if (hasAudio) args.AddRange(["-c:a", "mp2", "-shortest"]);
+            args.AddRange(["-f", "mpeg", source]);
+            await Ffmpeg(args.ToArray());
+            var video = await MediaTools.ProbeAsync(source, CancellationToken.None);
+            Assert.Equal("mpeg", video.ContainerFormat);
+            double duration = video.Duration;
+            string previewPath;
+            await using (var cache = new PreviewCache(CancellationToken.None))
+            {
+                await cache.PrepareAsync(video);
+                previewPath = Assert.IsType<string>(video.PreviewPath);
+                Assert.NotEqual(source, previewPath);
+                var indexed = await MediaTools.ProbeAsync(previewPath, CancellationToken.None);
+                Assert.Equal("matroska,webm", indexed.ContainerFormat);
+                Assert.Equal(hasAudio, indexed.HasAudio);
+                foreach (double time in new[] { 1.017, 3.217, 5.137 })
+                    Assert.Equal(await TrimmedFrameHash(source, time), await TrimmedFrameHash(previewPath, time));
+            }
+            Assert.False(File.Exists(previewPath));
+            Assert.Equal(source, video.Path);
+            Assert.Equal(duration, video.Duration);
+            await MediaTools.ExportAsync([new Segment(video, 1.017, 2.517)], destination,
+                18, "ultrafast", false, new Progress<double>(), CancellationToken.None);
+            var exported = await MediaTools.ProbeAsync(destination, CancellationToken.None);
+            Assert.InRange(exported.Duration, 1.45, 1.6);
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    private static async Task<string> TrimmedFrameHash(string path, double time)
+    {
+        var result = await MediaTools.RunAsync("ffmpeg", ["-v", "error", "-i", path, "-map", "0:v:0",
+            "-vf", $"trim=start={TimeText.Number(time)}", "-frames:v", "1", "-fps_mode", "passthrough",
+            "-f", "framemd5", "-"], CancellationToken.None);
+        Assert.True(result.ExitCode == 0, result.Stderr);
+        return result.Stdout.Split('\n').Last(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith('#'))
+            .Split(',')[^1].Trim();
+    }
+
+    [Theory]
     [InlineData(3, 2.5)]
     [InlineData(30, 29.9)]
     public async Task ThumbnailIsGeneratedWhenRequestedPositionIsPastVideoStream(double duration, double requested)

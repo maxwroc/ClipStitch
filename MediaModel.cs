@@ -11,6 +11,8 @@ public sealed class VideoItem : INotifyPropertyChanged
 {
     private bool included = true;
     public required string Path { get; init; }
+    public string ContainerFormat { get; init; } = "";
+    public string? PreviewPath { get; internal set; }
     public string Name => System.IO.Path.GetFileName(Path);
     public required double Duration { get; init; }
     public required int Width { get; init; }

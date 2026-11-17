@@ -18,6 +18,31 @@ namespace tests;
 
 public class TimelineRefreshTests
 {
+    [Fact]
+    public async Task IndexedProgramStreamSeeksStayOnTheOriginalMultiFileTimeline()
+    {
+        await WithVideos(async window =>
+        {
+            var videos = Field<ObservableCollection<VideoItem>>(window, "videos");
+            Assert.All(videos, video => Assert.NotNull(video.PreviewPath));
+            Invoke(window, "BeginPreview", 0);
+            var player = Field<LibVLCSharp.Shared.MediaPlayer>(window, "player");
+            await WaitUntil(() => !Field<bool>(window, "pendingSeek") && player.IsPlaying);
+            foreach (double global in new[] { 13d, 12.5, 6.5 })
+            {
+                double local = global >= videos[0].Duration ? global - videos[0].Duration : global;
+                Invoke(window, "SeekTo", global);
+                await WaitUntil(() => !Field<bool>(window, "pendingSeek") && player.IsPlaying);
+                for (int i = 0; i < 15; i++)
+                {
+                    await Task.Delay(100);
+                    Assert.InRange(player.Time / 1000d, local - 0.5, local + 2.5);
+                    Assert.InRange(Field<double>(window, "position"), global - 0.5, global + 2.5);
+                }
+            }
+        }, mpeg: true);
+    }
+
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
 
@@ -130,8 +155,10 @@ public class TimelineRefreshTests
         });
     }
 
-    [Fact]
-    public async Task ReplacingFolderCancelsOldLoadsAndReleasesTheOldPreview()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReplacingFolderCancelsOldLoadsAndReleasesTheOldPreview(bool mpeg)
     {
         await WithVideos(async window =>
         {
@@ -158,7 +185,11 @@ public class TimelineRefreshTests
             await AtFrame(window, 0, true);
             Assert.Equal(2, videos.Count);
             Assert.Equal(root, Path.GetDirectoryName(videos[0].Path));
-        });
+            var previews = videos.Where(video => video.PreviewPath is not null).Select(video => video.PreviewPath!).ToArray();
+            if (mpeg) Assert.Equal(2, previews.Length);
+            await Load(empty);
+            Assert.All(previews, path => Assert.False(File.Exists(path)));
+        }, mpeg);
     }
 
     [Fact]
@@ -572,6 +603,9 @@ public class TimelineRefreshTests
             File.Copy(path, second);
             var firstVideo = await MediaTools.ProbeAsync(path, CancellationToken.None);
             var secondVideo = await MediaTools.ProbeAsync(second, CancellationToken.None);
+            await using var cache = new PreviewCache(CancellationToken.None);
+            await cache.PrepareAsync(firstVideo);
+            await cache.PrepareAsync(secondVideo);
             await WithWindow(async window =>
             {
                 var videos = Field<ObservableCollection<VideoItem>>(window, "videos");
@@ -599,18 +633,26 @@ public class TimelineRefreshTests
             dispatcher.InvokeAsync(async () =>
             {
                 MainWindow? window = null;
+                Exception? failure = null;
                 try
                 {
                     window = new MainWindow { ShowInTaskbar = false, ShowActivated = false, Opacity = 0 };
                     window.Show();
                     await action(window);
-                    completion.SetResult();
                 }
-                catch (Exception ex) { completion.SetException(ex); }
+                catch (Exception ex) { failure = ex; }
                 finally
                 {
-                    window?.Close();
+                    if (window is not null)
+                    {
+                        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        window.Closed += (_, _) => closed.TrySetResult();
+                        window.Close();
+                        await closed.Task;
+                    }
                     dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
+                    if (failure is null) completion.SetResult();
+                    else completion.SetException(failure);
                 }
             });
             Dispatcher.Run();

@@ -30,6 +30,9 @@ public partial class MainWindow : Window
     private CancellationTokenSource? thumbnailCancellation;
     private CancellationTokenSource? exportCancellation;
     private Task folderPlaybackStop = Task.CompletedTask;
+    private PreviewCache? previewCache;
+    private bool closing;
+    private bool allowClose;
     private string? sourceFolder;
     private List<Segment>? preview;
     private int previewIndex;
@@ -102,8 +105,13 @@ public partial class MainWindow : Window
             HwndSource.FromHwnd(new WindowInteropHelper(this).Handle).AddHook(WindowMessageHook);
         player.EncounteredError += Player_EncounteredError;
         player.EndReached += Player_EndReached;
-        Closed += async (_, _) =>
+        Closing += async (_, e) =>
         {
+            if (allowClose) return;
+            e.Cancel = true;
+            if (closing) return;
+            closing = true;
+            IsEnabled = false;
             playbackRevision++;
             loadedVideo = null;
             folderCancellation?.Cancel();
@@ -112,13 +120,27 @@ public partial class MainWindow : Window
             timer.Stop();
             thumbnailRefreshTimer.Stop();
             VideoView.MediaPlayer = null;
-            await folderPlaybackStop;
-            await Task.Run(() =>
+            try
             {
-                player.Stop();
-                player.Dispose();
-                libVlc.Dispose();
-            });
+                await folderPlaybackStop;
+                await Task.Run(() =>
+                {
+                    player.Stop();
+                    player.Dispose();
+                    libVlc.Dispose();
+                });
+            }
+            catch (Exception ex) { ShowError("Could not stop playback", ex); }
+            finally
+            {
+                try
+                {
+                    if (previewCache is not null) await previewCache.DisposeAsync();
+                }
+                catch (Exception ex) { ShowError("Could not remove temporary previews", ex); }
+                allowClose = true;
+                Close();
+            }
         };
         UpdateControls();
     }
@@ -150,6 +172,9 @@ public partial class MainWindow : Window
         PreviewPlaceholder.Visibility = Visibility.Visible;
         var cancellation = new CancellationTokenSource();
         folderCancellation = cancellation;
+        var oldCache = previewCache;
+        var cache = new PreviewCache(cancellation.Token);
+        previewCache = cache;
         videos.Clear();
         sections.Clear();
         selectedSectionIndex = -1;
@@ -166,8 +191,8 @@ public partial class MainWindow : Window
         try
         {
             // LibVLC teardown can wait for window messages, so the dispatcher must stay free.
-            if (hadMedia && folderPlaybackStop.IsCompleted)
-                folderPlaybackStop = Task.Run(() => player.Stop());
+            if (hadMedia || oldCache is not null)
+                folderPlaybackStop = ReleasePreviewAsync(folderPlaybackStop, hadMedia, oldCache);
             await folderPlaybackStop;
             cancellation.Token.ThrowIfCancellationRequested();
             var files = await Task.Run(() => Directory.EnumerateFiles(folder)
@@ -188,7 +213,15 @@ public partial class MainWindow : Window
                         ? await MediaTools.ProbeIfVideoAsync(file, cancellation.Token)
                         : await MediaTools.ProbeAsync(file, cancellation.Token);
                     cancellation.Token.ThrowIfCancellationRequested();
-                    if (video is not null) videos.Add(video);
+                    if (video is not null)
+                    {
+                        StatusLabel.Text = video.ContainerFormat == "mpeg"
+                            ? $"Preparing indexed preview for {video.Name}…"
+                            : "Reading video information…";
+                        await cache.PrepareAsync(video);
+                        cancellation.Token.ThrowIfCancellationRequested();
+                        videos.Add(video);
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { failures.Add($"{System.IO.Path.GetFileName(file)}: {ex.Message}"); }
@@ -205,6 +238,13 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) { }
         catch (Exception ex) { ShowError("Could not open folder", ex); }
         finally { UpdateControls(); }
+    }
+
+    private async Task ReleasePreviewAsync(Task previousStop, bool stopPlayer, PreviewCache? cache)
+    {
+        await previousStop.ConfigureAwait(false);
+        if (stopPlayer) await Task.Run(() => player.Stop()).ConfigureAwait(false);
+        if (cache is not null) await cache.DisposeAsync().ConfigureAwait(false);
     }
 
     private void VideoList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -792,7 +832,7 @@ public partial class MainWindow : Window
             player.Stop();
         }
         player.Mute = true;
-        using var media = new LibVLCSharp.Shared.Media(libVlc, new Uri(video.Path));
+        using var media = new LibVLCSharp.Shared.Media(libVlc, new Uri(video.PreviewPath ?? video.Path));
         // Initialize the decoder before seeking; some streams only provide video headers at the start.
         if (!player.Play(media))
         {

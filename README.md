@@ -21,6 +21,10 @@ Manual seeks into shaded gaps preserve the clicked position and transport state:
 
 Timeline seeks keep playback running even if decoding or UI updates are delayed, or a source resumes at an imprecise timestamp. Newly opened sources initialize their video decoder before seeking. An outstanding still-frame pause cannot override a newer Play request.
 
+MPEG Program Streams (including many `.dat` recordings) get temporary indexed Matroska previews when the folder is opened. VLC's MPEG-PS demuxer seeks by byte percentage, which can land far from the requested time in variable-bitrate recordings. FFmpeg normally copies the video and audio without re-encoding; if missing packet timestamps prevent remuxing, it creates a lossless H.264/PCM preview instead, which can take longer. The status shows preview preparation. These previews require temporary disk space and are removed after changing folders or closing the app.
+
+The original files, FFprobe durations, source-file offsets, and selection times remain unchanged. Only the player uses the temporary previews; thumbnails and final FFmpeg export still read the originals. Preview timestamps use FFmpeg's normal input-time normalization, matching the original-input `trim`/`atrim` used for export.
+
 Thumbnail positions are approximate: sampling avoids the last five seconds of each video (20% of the duration for videos shorter than 25 seconds) and uses fast keyframe-based seeking. If that produces no image, the app retries five seconds earlier, then tries the opening frame if necessary; it no longer decodes the whole video to recover a thumbnail. Playback and export positions are unchanged.
 
 ## Build
