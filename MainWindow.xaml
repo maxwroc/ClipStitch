@@ -113,7 +113,7 @@
                     <DockPanel Margin="0,6">
                         <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                             <Button x:Name="PlayPauseButton" Style="{StaticResource IconButton}" Click="PlayPause_Click"
-                                    ToolTip="Play from the first selection" AutomationProperties.Name="Play">
+                                    ToolTip="Play from the current position" AutomationProperties.Name="Play">
                                 <Path x:Name="PlayPauseIcon" Style="{StaticResource ControlIcon}" Fill="#E7F1FA" StrokeThickness="0" Data="M 4,2 L 18,10 L 4,18 Z"/>
                             </Button>
                             <Button x:Name="StopButton" Style="{StaticResource IconButton}" Click="Stop_Click"

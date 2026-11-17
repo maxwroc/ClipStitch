@@ -209,6 +209,39 @@ public class TimelineRefreshTests
         });
     }
 
+    [Theory]
+    [InlineData(5d, false)]
+    [InlineData(13d, false)]
+    [InlineData(13d, true)]
+    public async Task GeneralPlayStartsAtThePointerAfterSeekingAndZooming(double target, bool mpeg)
+    {
+        await WithVideos(async window =>
+        {
+            var videos = Field<ObservableCollection<VideoItem>>(window, "videos");
+            double local = target >= videos[0].Duration ? target - videos[0].Duration : target;
+            Invoke(window, "SeekTo", target);
+            if (!mpeg) await AtFrame(window, local, true);
+            else Assert.True(Field<bool>(window, "pendingSeek"));
+            var scroll = Field<ScrollViewer>(window, "TimelineScroll");
+            Invoke(window, "TimelineScroll_MouseWheel", scroll, new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, 480)
+                { RoutedEvent = Mouse.PreviewMouseWheelEvent });
+            scroll.UpdateLayout();
+            double x = 14 + target / videos.Sum(video => video.Duration) *
+                (Field<Grid>(window, "Timeline").ActualWidth - 28);
+            scroll.ScrollToHorizontalOffset(Math.Max(0, x - scroll.ViewportWidth / 2));
+            scroll.UpdateLayout();
+            Assert.True(Field<double>(window, "timelineZoom") > 1);
+            Assert.Equal(target, Field<double>(window, "position"));
+            Click(window, "PlayPause_Click");
+            Assert.Equal(target, Field<double>(window, "position"));
+            Assert.Equal("Playing", Mode(window));
+            await AtFrame(window, local, false);
+            var player = Field<LibVLCSharp.Shared.MediaPlayer>(window, "player");
+            long time = player.Time;
+            await WaitUntil(() => player.Time >= time + 250);
+        }, mpeg);
+    }
+
     [Fact]
     public async Task PlaybackIntentSurvivesSeeksDeletionAndStop()
     {
@@ -221,8 +254,8 @@ public class TimelineRefreshTests
             await AtFrame(window, 7, true);
             Assert.Equal(100, player.Volume);
             Click(window, "PlayPause_Click");
-            Assert.Equal(2, Field<double>(window, "position"));
-            await AtFrame(window, 2, false);
+            Assert.Equal(7, Field<double>(window, "position"));
+            await AtFrame(window, 7, false);
             Click(window, "PlayPause_Click");
             await WaitUntil(() => player.State == VLCState.Paused);
             double paused = Field<double>(window, "position");
@@ -284,8 +317,9 @@ public class TimelineRefreshTests
             Assert.Equal(2, Field<double>(window, "position"));
             Invoke(window, "SeekTo", 3.8d);
             await WaitUntil(() => Mode(window) == "Stopped");
+            double stopped = Field<double>(window, "position");
             Click(window, "PlayPause_Click");
-            Assert.Equal(2, Field<double>(window, "position"));
+            Assert.Equal(stopped, Field<double>(window, "position"));
         });
     }
 

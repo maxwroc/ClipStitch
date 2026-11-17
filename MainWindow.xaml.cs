@@ -326,7 +326,7 @@ public partial class MainWindow : Window
         bool playing = playbackMode == PlaybackMode.Playing;
         PlayPauseIcon.Data = playing ? pauseGlyph : playGlyph;
         PlayPauseButton.ToolTip = playing ? "Pause playback" : playbackMode == PlaybackMode.Paused
-            ? "Resume playback from the paused position" : "Play from the first selection";
+            ? "Resume playback from the paused position" : "Play from the current position";
         System.Windows.Automation.AutomationProperties.SetName(PlayPauseButton, playing ? "Pause" : "Play");
         var section = SelectedSection;
         bool active = section is not null && !draggingMarker;
@@ -980,7 +980,11 @@ public partial class MainWindow : Window
             }
             player.SetPause(false);
         }
-        else BeginPreview(0);
+        else if (videos.Count > 0)
+        {
+            playbackMode = PlaybackMode.Playing;
+            SeekTo(position);
+        }
         UpdateControls();
     }
 
