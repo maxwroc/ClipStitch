@@ -42,8 +42,6 @@ public partial class MainWindow : Window
     private double timelineZoom = 1;
     private Border? selectedRangeBorder;
     private VideoItem? loadedVideo;
-    private static readonly HashSet<string> Extensions = new(StringComparer.OrdinalIgnoreCase)
-        { ".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mpeg", ".mpg", ".mts", ".m2ts", ".wmv" };
     private VideoItem? Current => VideoList.SelectedItem as VideoItem;
     private double TotalDuration => videos.Sum(v => v.Duration);
 
@@ -119,7 +117,7 @@ public partial class MainWindow : Window
         try
         {
             var files = Directory.EnumerateFiles(dialog.FolderName)
-                .Where(f => Extensions.Contains(System.IO.Path.GetExtension(f)))
+                .Where(MediaTools.IsVideoCandidate)
                 .OrderBy(f => f, new NaturalPathComparer()).ToArray();
             var failures = new List<string>();
             foreach (var file in files)
@@ -127,9 +125,11 @@ public partial class MainWindow : Window
                 cancellation.Token.ThrowIfCancellationRequested();
                 try
                 {
-                    var video = await MediaTools.ProbeAsync(file, cancellation.Token);
+                    var video = string.Equals(System.IO.Path.GetExtension(file), ".dat", StringComparison.OrdinalIgnoreCase)
+                        ? await MediaTools.ProbeIfVideoAsync(file, cancellation.Token)
+                        : await MediaTools.ProbeAsync(file, cancellation.Token);
                     cancellation.Token.ThrowIfCancellationRequested();
-                    videos.Add(video);
+                    if (video is not null) videos.Add(video);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { failures.Add($"{System.IO.Path.GetFileName(file)}: {ex.Message}"); }

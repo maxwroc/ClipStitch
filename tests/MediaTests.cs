@@ -144,6 +144,46 @@ public class MediaTests
         Assert.EndsWith("clip10.mp4", names[2]);
     }
 
+    [Fact]
+    public async Task DatCandidatesAreProbedForVideoContent()
+    {
+        string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ClipStitch-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string source = System.IO.Path.Combine(directory, "video.mp4");
+            string video = System.IO.Path.Combine(directory, "video.DAT");
+            string audioSource = System.IO.Path.Combine(directory, "audio.wav");
+            string audio = System.IO.Path.Combine(directory, "audio.dat");
+            string text = System.IO.Path.Combine(directory, "text.dat");
+            string empty = System.IO.Path.Combine(directory, "empty.dat");
+            await Ffmpeg("-f", "lavfi", "-i", "color=c=red:s=64x64:r=25:d=1", "-c:v", "libx264", source);
+            await Ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=1", audioSource);
+            File.Copy(source, video);
+            File.Copy(audioSource, audio);
+            await File.WriteAllTextAsync(text, "This is not video.");
+            await File.WriteAllTextAsync(empty, "");
+
+            Assert.True(MediaTools.IsVideoCandidate(video));
+            Assert.True(MediaTools.IsVideoCandidate(source));
+            Assert.False(MediaTools.IsVideoCandidate(audioSource));
+            var item = await MediaTools.ProbeIfVideoAsync(video, CancellationToken.None);
+            Assert.NotNull(item);
+            Assert.Equal(video, item.Path);
+            Assert.InRange(item.Duration, 0.9, 1.1);
+            Assert.Null(await MediaTools.ProbeIfVideoAsync(audio, CancellationToken.None));
+            Assert.Null(await MediaTools.ProbeIfVideoAsync(text, CancellationToken.None));
+            Assert.Null(await MediaTools.ProbeIfVideoAsync(empty, CancellationToken.None));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => MediaTools.ProbeAsync(text, CancellationToken.None));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                MediaTools.ProbeIfVideoAsync(System.IO.Path.Combine(directory, "missing.dat"), CancellationToken.None));
+            using var cancel = new CancellationTokenSource();
+            cancel.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => MediaTools.ProbeIfVideoAsync(video, cancel.Token));
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
     [Theory]
     [InlineData("00:01:02.500", 62.5)]
     [InlineData("2.25", 2.25)]

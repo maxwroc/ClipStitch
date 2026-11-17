@@ -9,6 +9,13 @@ namespace ClipStitch;
 
 public static class MediaTools
 {
+    private const int AvErrorInvalidData = -1094995529;
+    private const int AvErrorEof = -541478725;
+    private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mpeg", ".mpg", ".mts", ".m2ts", ".wmv", ".dat" };
+
+    public static bool IsVideoCandidate(string path) => VideoExtensions.Contains(Path.GetExtension(path));
+
     private static string Tool(string name)
     {
         string path = System.IO.Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg", "bin", name + ".exe");
@@ -51,16 +58,37 @@ public static class MediaTools
         return (process.ExitCode, outputText, text);
     }
 
-    public static async Task<VideoItem> ProbeAsync(string path, CancellationToken token)
+    public static async Task<VideoItem> ProbeAsync(string path, CancellationToken token) =>
+        (await ProbeAsync(path, token, false))!;
+
+    public static Task<VideoItem?> ProbeIfVideoAsync(string path, CancellationToken token) =>
+        ProbeAsync(path, token, true);
+
+    private static async Task<VideoItem?> ProbeAsync(string path, CancellationToken token, bool skipNonVideo)
     {
-        var result = await RunAsync("ffprobe", ["-v", "error", "-show_format", "-show_streams", "-of", "json", path], token);
-        if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr.Trim());
+        var result = await RunAsync("ffprobe", ["-v", "error", "-show_error", "-show_format", "-show_streams", "-of", "json", path], token);
+        if (result.ExitCode != 0)
+        {
+            if (skipNonVideo)
+            {
+                using var errorDoc = JsonDocument.Parse(result.Stdout);
+                if (errorDoc.RootElement.TryGetProperty("error", out var error) &&
+                    error.TryGetProperty("code", out var code) &&
+                    code.TryGetInt32(out int errorCode) &&
+                    (errorCode == AvErrorInvalidData || errorCode == AvErrorEof)) return null;
+            }
+            throw new InvalidOperationException(result.Stderr.Trim());
+        }
         using var doc = JsonDocument.Parse(result.Stdout);
         var root = doc.RootElement;
         var streams = root.GetProperty("streams").EnumerateArray().ToArray();
         var video = streams.FirstOrDefault(s => GetString(s, "codec_type") == "video" &&
             (!s.TryGetProperty("disposition", out var d) || !d.TryGetProperty("attached_pic", out var a) || a.GetInt32() == 0));
-        if (video.ValueKind == JsonValueKind.Undefined) throw new InvalidOperationException("No video stream found.");
+        if (video.ValueKind == JsonValueKind.Undefined)
+        {
+            if (skipNonVideo) return null;
+            throw new InvalidOperationException("No video stream found.");
+        }
         double duration = ParseDouble(GetString(root.GetProperty("format"), "duration"));
         if (duration <= 0) duration = ParseDouble(GetString(video, "duration"));
         if (duration <= 0 || !double.IsFinite(duration)) throw new InvalidOperationException("Video duration is unavailable.");
