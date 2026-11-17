@@ -42,7 +42,7 @@ internal sealed class SaveNameDialog : Window
         folderText.ToolTip = folder;
         nameBox.Text = defaultName;
 
-        var change = new Button { Content = "Change folder…" };
+        var change = new Button { Content = "Change folder…", ToolTip = "Choose the destination folder" };
         change.Click += (_, _) =>
         {
             var picker = new OpenFolderDialog { Title = "Choose where to save the video", InitialDirectory = this.folder };
@@ -52,9 +52,9 @@ internal sealed class SaveNameDialog : Window
             folderText.ToolTip = this.folder;
             nameBox.Focus();
         };
-        var ok = new Button { Content = "Save", IsDefault = true, MinWidth = 90 };
+        var ok = new Button { Content = "Save", IsDefault = true, MinWidth = 90, ToolTip = "Save the joined video with this name" };
         ok.Click += (_, _) => Accept();
-        var cancel = new Button { Content = "Cancel", IsCancel = true, MinWidth = 90 };
+        var cancel = new Button { Content = "Cancel", IsCancel = true, MinWidth = 90, ToolTip = "Close without saving" };
 
         var folderRow = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
         folderRow.Children.Add(new TextBlock { Text = "Folder:", Foreground = Brushes.LightSteelBlue });
@@ -110,7 +110,8 @@ internal sealed class ExportProgressDialog : Window
 {
     private readonly ProgressBar bar = new() { Width = 380, Height = 18, Minimum = 0, Maximum = 1, Margin = new Thickness(0, 8, 0, 0) };
     private readonly TextBlock percent = new() { Margin = new Thickness(0, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Right };
-    private readonly Button cancel = new() { Content = "Cancel export", HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
+    private readonly Button cancel = new() { Content = "Cancel export", ToolTip = "Cancel saving and leave the destination unchanged",
+        HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
     private bool finished;
 
     public event Action? CancelRequested;

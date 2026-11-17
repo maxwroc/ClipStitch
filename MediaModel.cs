@@ -31,10 +31,7 @@ public sealed class VideoItem : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
-public sealed record KeepRange(double Start, double End)
-{
-    public string Description => $"{TimeText.Format(Start)}  –  {TimeText.Format(End)}";
-}
+public sealed record KeepRange(double Start, double End);
 
 public sealed record Segment(VideoItem Video, double Start, double End)
 {
@@ -70,13 +67,23 @@ public static class TimelineSections
         return [new KeepRange(time, ordered[index].End), .. ordered.Skip(index + 1)];
     }
 
-    /// <summary>Kept ranges that continue a boundary preview of <paramref name="section"/>: its unplayed remainder, then the later sections.</summary>
-    public static List<KeepRange> ContinueAfter(IEnumerable<KeepRange> sections, KeepRange section, double time)
+    public static int IndexAt(IReadOnlyList<KeepRange> sections, double time)
+    {
+        for (int i = 0; i < sections.Count; i++)
+            if (time >= sections[i].Start && time < sections[i].End) return i;
+        return -1;
+    }
+
+    public static List<KeepRange> Gaps(IEnumerable<KeepRange> sections, double total)
     {
         var result = new List<KeepRange>();
-        double from = Math.Max(time, section.Start);
-        if (from < section.End - 0.05) result.Add(new KeepRange(from, section.End));
-        result.AddRange(sections.Where(r => r.Start >= section.End).OrderBy(r => r.Start));
+        double end = 0;
+        foreach (var section in sections.OrderBy(s => s.Start))
+        {
+            if (section.Start > end) result.Add(new KeepRange(end, section.Start));
+            end = Math.Max(end, section.End);
+        }
+        if (end < total) result.Add(new KeepRange(end, total));
         return result;
     }
 
@@ -150,23 +157,6 @@ public static class TimeText
     {
         var time = TimeSpan.FromSeconds(Math.Max(0, seconds));
         return $"{(long)time.TotalHours:00}:{time.Minutes:00}:{time.Seconds:00}.{time.Milliseconds:000}";
-    }
-
-    public static bool TryParse(string text, out double seconds)
-    {
-        seconds = 0;
-        if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-            seconds = value;
-        else if (text.Split(':') is { Length: 3 } parts &&
-                 long.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var hours) &&
-                 int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var minutes) &&
-                 double.TryParse(parts[2], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var remainder) &&
-                 minutes < 60 && remainder >= 0 && remainder < 60)
-            seconds = hours * 3600d + minutes * 60d + remainder;
-        else if (TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out var time))
-            seconds = time.TotalSeconds;
-        else return false;
-        return double.IsFinite(seconds) && seconds >= 0 && seconds <= TimeSpan.MaxValue.TotalSeconds;
     }
 
     public static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);

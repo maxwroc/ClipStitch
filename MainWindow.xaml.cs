@@ -15,6 +15,10 @@ namespace ClipStitch;
 
 public partial class MainWindow : Window
 {
+    private enum PlaybackMode { Stopped, Playing, Paused }
+
+    private readonly Geometry playGlyph = Geometry.Parse("M 4,2 L 18,10 L 4,18 Z");
+    private readonly Geometry pauseGlyph = Geometry.Parse("M 3,2 L 8,2 L 8,18 L 3,18 Z M 12,2 L 17,2 L 17,18 L 12,18 Z");
     private readonly ObservableCollection<VideoItem> videos = [];
     private readonly ObservableCollection<KeepRange> sections = [];
     private readonly List<(double Start, double End, System.Windows.Media.Imaging.BitmapImage Image)> thumbnailImages = [];
@@ -28,14 +32,17 @@ public partial class MainWindow : Window
     private string? sourceFolder;
     private List<Segment>? preview;
     private int previewIndex;
-    private KeepRange? continueSection;
+    private PlaybackMode playbackMode;
+    private double position;
+    private int selectedSectionIndex = -1;
+    private long playbackRevision;
     private bool pendingSeek;
+    private bool seekIssued;
+    private long seekIssuedAt;
     private bool selectingForPreview;
     private long seekTarget;
-    private bool draggingPosition;
     private bool draggingMarker;
     private bool draggingStartMarker;
-    private bool pauseAfterSeek;
     private int coverHideTicks = -1;
     private bool draggingScrollbar;
     private bool inSizeMove;
@@ -46,10 +53,14 @@ public partial class MainWindow : Window
     private Border? selectedRangeBorder;
     private VideoItem? loadedVideo;
     private VideoItem? Current => VideoList.SelectedItem as VideoItem;
+    private KeepRange? SelectedSection => selectedSectionIndex >= 0 && selectedSectionIndex < sections.Count
+        ? sections[selectedSectionIndex] : null;
     private double TotalDuration => videos.Sum(v => v.Duration);
 
     // Fixed margin at both timeline ends so a selection handle placed outside a section edge stays visible.
     private const double HandleWidth = 14;
+    private const double PlayheadHeaderHeight = 12;
+    private double TimelineContentHeight => Math.Max(0, Timeline.ActualHeight - PlayheadHeaderHeight);
     private double ContentWidth => Math.Max(0, Timeline.ActualWidth - 2 * HandleWidth);
     private double TimeToX(double time) => HandleWidth + (TotalDuration <= 0 ? 0 : time / TotalDuration * ContentWidth);
     private double DurationToWidth(double duration) => TotalDuration <= 0 ? 0 : Math.Max(0, duration / TotalDuration * ContentWidth);
@@ -69,7 +80,8 @@ public partial class MainWindow : Window
         player = new LibVLCSharp.Shared.MediaPlayer(libVlc);
         VideoView.MediaPlayer = player;
         VideoList.ItemsSource = videos;
-        RangeList.ItemsSource = sections;
+        VolumePopup.Opened += (_, _) => VolumeSlider.Focus();
+        Deactivated += (_, _) => VolumePopup.IsOpen = false;
         timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         timer.Tick += Timer_Tick;
         timer.Start();
@@ -101,7 +113,7 @@ public partial class MainWindow : Window
             player.Dispose();
             libVlc.Dispose();
         };
-        PositionSlider.PreviewMouseLeftButtonDown += (_, _) => draggingPosition = true;
+        UpdateControls();
     }
 
     private async void OpenFolder_Click(object sender, RoutedEventArgs e)
@@ -118,6 +130,8 @@ public partial class MainWindow : Window
         folderCancellation = cancellation;
         videos.Clear();
         sections.Clear();
+        selectedSectionIndex = -1;
+        SetPosition(0);
         thumbnailImages.Clear();
         timelineZoom = 1;
         UpdateTimelineWidth();
@@ -150,8 +164,6 @@ public partial class MainWindow : Window
             if (videos.Count > 0)
             {
                 sections.Add(new KeepRange(0, TotalDuration));
-                PositionSlider.Maximum = TotalDuration;
-                RangeList.SelectedIndex = 0;
                 VideoList.SelectedIndex = 0;
                 ScheduleThumbnailRefresh();
             }
@@ -160,6 +172,7 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { ShowError("Could not open folder", ex); }
+        finally { UpdateControls(); }
     }
 
     private void VideoList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -168,7 +181,6 @@ public partial class MainWindow : Window
         if (!selectingForPreview && Current is { } video)
         {
             PreviewMarker(OffsetOf(video), true);
-            SelectSectionAt(PositionSlider.Value);
         }
     }
 
@@ -213,103 +225,79 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Include_Click(object sender, RoutedEventArgs e) => InvalidatePreview();
-
-    private void RangeList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void Include_Click(object sender, RoutedEventArgs e)
     {
-        if (JoinPreviousButton is null) return;
-        JoinPreviousButton.IsEnabled = RangeList.SelectedIndex > 0;
-        JoinNextButton.IsEnabled = RangeList.SelectedIndex >= 0 && RangeList.SelectedIndex < sections.Count - 1;
-        if (RangeList.SelectedItem is not KeepRange range) { DrawRanges(); return; }
-        if (!selectingForPreview) InvalidatePreview();
-        SetMarkers(range.Start, range.End);
-        DrawRanges();
+        InvalidatePreview();
+        UpdateControls();
     }
 
-    private void SetMarkers(double start, double end)
+    private void SetPosition(double time)
     {
-        StartText.Text = TimeText.Format(start);
-        EndText.Text = TimeText.Format(end);
-    }
-
-    private static double MarkerValue(TextBox box) => TimeText.TryParse(box.Text, out double value) ? value : 0;
-
-    private void RangeText_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (sections.Count == 0) return;
-        if (TimeText.TryParse(StartText.Text, out double start) && TimeText.TryParse(EndText.Text, out double end) &&
-            start <= TotalDuration && end <= TotalDuration) SetMarkers(start, end);
-    }
-
-    private void SetStart_Click(object sender, RoutedEventArgs e) =>
-        SetMarkers(PositionSlider.Value, MarkerValue(EndText));
-    private void SetEnd_Click(object sender, RoutedEventArgs e) =>
-        SetMarkers(MarkerValue(StartText), PositionSlider.Value);
-
-    private bool TryGetRange(out KeepRange range)
-    {
-        range = new KeepRange(0, 0);
-        if (sections.Count == 0) { MessageBox.Show(this, "Load videos first."); return false; }
-        if (!TimeText.TryParse(StartText.Text, out double start) || !TimeText.TryParse(EndText.Text, out double end) ||
-            start >= end || end > TotalDuration)
+        position = Math.Clamp(time, 0, TotalDuration);
+        int index = draggingMarker ? selectedSectionIndex : TimelineSections.IndexAt(sections, position);
+        if (index != selectedSectionIndex)
         {
-            MessageBox.Show(this, "Enter valid start and end times within the timeline, with start before end.", "Invalid section");
-            return false;
+            selectedSectionIndex = index;
+            DrawRanges();
         }
-        range = new KeepRange(start, end);
-        return true;
+        DrawPlayhead();
+        PlaybackLabel.Text = $"{TimeText.Format(position)} / {TimeText.Format(TotalDuration)}";
+        UpdateControls();
+    }
+
+    private void UpdateControls()
+    {
+        bool playable = sections.Count > 0 && videos.Any(v => v.Included);
+        PlayPauseButton.IsEnabled = playable || playbackMode == PlaybackMode.Paused;
+        StopButton.IsEnabled = playable;
+        ExportButton.IsEnabled = playable && exportCancellation is null;
+        bool playing = playbackMode == PlaybackMode.Playing;
+        PlayPauseIcon.Data = playing ? pauseGlyph : playGlyph;
+        PlayPauseButton.ToolTip = playing ? "Pause playback" : playbackMode == PlaybackMode.Paused
+            ? "Resume playback from the paused position" : "Play from the first selection";
+        System.Windows.Automation.AutomationProperties.SetName(PlayPauseButton, playing ? "Pause" : "Play");
+        var section = SelectedSection;
+        bool active = section is not null && !draggingMarker;
+        PlaySectionButton.IsEnabled = active;
+        PreviousSectionButton.IsEnabled = JoinPreviousButton.IsEnabled = active && selectedSectionIndex > 0;
+        NextSectionButton.IsEnabled = JoinNextButton.IsEnabled = active && selectedSectionIndex + 1 < sections.Count;
+        SplitButton.IsEnabled = active && position > section!.Start && position < section.End;
+        RemoveSectionButton.IsEnabled = active && sections.Count > 1;
     }
 
     private void AddRange_Click(object sender, RoutedEventArgs e)
     {
-        if (sections.Count == 0 && TotalDuration > 0)
-        {
-            sections.Add(new KeepRange(0, TotalDuration));
-            RangeList.SelectedIndex = 0;
-            DrawRanges();
-            return;
-        }
-        if (RangeList.SelectedItem is not KeepRange range) return;
+        if (SelectedSection is not { } range || position <= range.Start || position >= range.End) return;
         try
         {
-            var split = TimelineSections.Split(range, PositionSlider.Value);
+            var split = TimelineSections.Split(range, position);
             InvalidatePreview();
-            int index = RangeList.SelectedIndex;
+            int index = selectedSectionIndex;
             sections[index] = split.Left;
             sections.Insert(index + 1, split.Right);
-            RangeList.SelectedIndex = index + 1;
+            SetPosition(position);
             DrawRanges();
         }
         catch (InvalidOperationException ex) { ShowError("Cannot split section", ex); }
     }
 
-    private void UpdateRange_Click(object sender, RoutedEventArgs e)
-    {
-        if (RangeList.SelectedIndex < 0) { MessageBox.Show(this, "Select a section to update."); return; }
-        if (!TryGetRange(out var range)) return;
-        int index = RangeList.SelectedIndex;
-        if ((index > 0 && range.Start < sections[index - 1].End) ||
-            (index + 1 < sections.Count && range.End > sections[index + 1].Start))
-        {
-            MessageBox.Show(this, "Sections cannot overlap. Join neighboring sections first.");
-            return;
-        }
-        InvalidatePreview();
-        sections[index] = range;
-        RangeList.SelectedIndex = index;
-        DrawRanges();
-    }
-
     private void RemoveRange_Click(object sender, RoutedEventArgs e)
     {
-        if (RangeList.SelectedIndex < 0) return;
-        InvalidatePreview();
-        sections.RemoveAt(RangeList.SelectedIndex);
+        if (SelectedSection is null || sections.Count <= 1) return;
+        sections.RemoveAt(selectedSectionIndex);
+        if (preview is not null) RebuildPreviewAtPosition();
+        SetPosition(position);
         DrawRanges();
     }
 
-    private void JoinPrevious_Click(object sender, RoutedEventArgs e) => JoinSections(RangeList.SelectedIndex - 1);
-    private void JoinNext_Click(object sender, RoutedEventArgs e) => JoinSections(RangeList.SelectedIndex);
+    private void JoinPrevious_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedSection is not null) JoinSections(selectedSectionIndex - 1);
+    }
+    private void JoinNext_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedSection is not null) JoinSections(selectedSectionIndex);
+    }
     private void JoinSections(int first)
     {
         if (first < 0 || first + 1 >= sections.Count) return;
@@ -317,7 +305,7 @@ public partial class MainWindow : Window
         var joined = TimelineSections.Join(sections[first], sections[first + 1]);
         sections.RemoveAt(first + 1);
         sections[first] = joined;
-        RangeList.SelectedIndex = first;
+        SetPosition(position);
         DrawRanges();
     }
 
@@ -325,13 +313,13 @@ public partial class MainWindow : Window
     {
         Thumbnails.Children.Clear();
         if (TotalDuration <= 0) return;
-        var content = new Rectangle { Width = ContentWidth, Height = Timeline.ActualHeight, Fill = new SolidColorBrush(Color.FromRgb(24, 45, 67)) };
+        var content = new Rectangle { Width = ContentWidth, Height = TimelineContentHeight, Fill = new SolidColorBrush(Color.FromRgb(24, 45, 67)) };
         Canvas.SetLeft(content, HandleWidth);
         Thumbnails.Children.Add(content);
         foreach (var item in thumbnailImages)
         {
             var image = new Image { Source = item.Image, Stretch = Stretch.UniformToFill,
-                Width = DurationToWidth(item.End - item.Start), Height = Timeline.ActualHeight };
+                Width = DurationToWidth(item.End - item.Start), Height = TimelineContentHeight };
             Canvas.SetLeft(image, TimeToX(item.Start));
             Thumbnails.Children.Add(image);
         }
@@ -340,14 +328,15 @@ public partial class MainWindow : Window
     private void DrawRanges()
     {
         if (RangeOverlay is null || draggingMarker) return;
+        DrawGaps();
         RangeOverlay.Children.Clear();
         selectedRangeBorder = null;
         if (TotalDuration <= 0) return;
         foreach (var range in sections)
         {
-            bool selected = ReferenceEquals(range, RangeList.SelectedItem);
+            bool selected = ReferenceEquals(range, SelectedSection);
             var rect = new Border { Width = DurationToWidth(range.End - range.Start),
-                Height = Timeline.ActualHeight, Background = new SolidColorBrush(selected ? Color.FromArgb(48, 37, 220, 143) : Color.FromArgb(30, 99, 157, 177)),
+                Height = TimelineContentHeight, Background = new SolidColorBrush(selected ? Color.FromArgb(48, 37, 220, 143) : Color.FromArgb(30, 99, 157, 177)),
                 BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(161, 255, 115) : Color.FromRgb(143, 244, 191)),
                 // The selected section's sides are formed by its handles, which sit just outside the section edges.
                 BorderThickness = selected ? new Thickness(0, 3, 0, 3) : new Thickness(3),
@@ -362,22 +351,35 @@ public partial class MainWindow : Window
         {
             if (offset > 0)
             {
-                var line = new Rectangle { Width = 1, Height = Timeline.ActualHeight, Fill = Brushes.SteelBlue, IsHitTestVisible = false, Tag = offset };
+                var line = new Rectangle { Width = 1, Height = TimelineContentHeight, Fill = Brushes.SteelBlue, IsHitTestVisible = false, Tag = offset };
                 Canvas.SetLeft(line, TimeToX(offset));
                 RangeOverlay.Children.Add(line);
             }
             offset += video.Duration;
         }
-        if (RangeList.SelectedItem is KeepRange selectedRange)
+        if (SelectedSection is { } selectedRange)
         {
             AddMarker(selectedRange, true);
             AddMarker(selectedRange, false);
         }
         DrawPlayhead();
     }
+
+    private void DrawGaps()
+    {
+        GapOverlay.Children.Clear();
+        foreach (var gap in TimelineSections.Gaps(sections, TotalDuration))
+        {
+            var shade = new Rectangle { Width = DurationToWidth(gap.End - gap.Start), Height = TimelineContentHeight,
+                Fill = new SolidColorBrush(Color.FromArgb(38, 0, 0, 0)), IsHitTestVisible = false };
+            Canvas.SetLeft(shade, TimeToX(gap.Start));
+            GapOverlay.Children.Add(shade);
+        }
+    }
+
     private void AddMarker(KeepRange range, bool start)
     {
-        var thumb = new Thumb { Width = HandleWidth, Height = Timeline.ActualHeight, Cursor = Cursors.SizeWE,
+        var thumb = new Thumb { Width = HandleWidth, Height = TimelineContentHeight, Cursor = Cursors.SizeWE,
             Background = new SolidColorBrush(Color.FromRgb(161, 255, 115)), Tag = start,
             ToolTip = $"{(start ? "Start" : "End")}: {TimeText.Format(start ? range.Start : range.End)}" };
         System.Windows.Automation.AutomationProperties.SetName(thumb, start ? "Drag section start" : "Drag section end");
@@ -401,11 +403,11 @@ public partial class MainWindow : Window
             draggingMarker = true;
             draggingStartMarker = start;
             InvalidatePreview();
-            PreviewMarker(start ? sections[RangeList.SelectedIndex].Start : sections[RangeList.SelectedIndex].End, start);
+            PreviewMarker(start ? sections[selectedSectionIndex].Start : sections[selectedSectionIndex].End, start);
         };
         thumb.DragDelta += (_, args) =>
         {
-            int index = RangeList.SelectedIndex;
+            int index = selectedSectionIndex;
             if (index < 0 || ContentWidth <= 0) return;
             var current = sections[index];
             double delta = args.HorizontalChange / ContentWidth * TotalDuration;
@@ -416,8 +418,6 @@ public partial class MainWindow : Window
                 ? new KeepRange(Math.Clamp(current.Start + delta, minimum, current.End - minDuration), current.End)
                 : new KeepRange(current.Start, Math.Clamp(current.End + delta, current.Start + minDuration, maximum));
             sections[index] = updated;
-            RangeList.SelectedIndex = index;
-            SetMarkers(updated.Start, updated.End);
             if (selectedRangeBorder is not null)
             {
                 selectedRangeBorder.Tag = updated;
@@ -425,13 +425,17 @@ public partial class MainWindow : Window
                 selectedRangeBorder.Width = DurationToWidth(updated.End - updated.Start);
             }
             Canvas.SetLeft(thumb, HandleLeft(start ? updated.Start : updated.End, start));
+            thumb.ToolTip = $"{(start ? "Start" : "End")}: {TimeText.Format(start ? updated.Start : updated.End)}";
+            DrawGaps();
             PreviewMarker(start ? updated.Start : updated.End, start);
         };
         thumb.DragCompleted += (_, args) =>
         {
+            var section = SelectedSection;
             draggingMarker = false;
+            SetPosition(position);
             DrawRanges();
-            if (!args.Canceled && RangeList.SelectedItem is KeepRange section)
+            if (!args.Canceled && section is not null)
                 BeginBoundaryPreview(section, start);
         };
         RangeOverlay.Children.Add(thumb);
@@ -453,6 +457,7 @@ public partial class MainWindow : Window
     private void RepositionOverlay()
     {
         if (TotalDuration <= 0) return;
+        DrawGaps();
         foreach (UIElement element in RangeOverlay.Children)
         {
             if (element is Border { Tag: KeepRange range } sectionBorder)
@@ -462,7 +467,7 @@ public partial class MainWindow : Window
             }
             else if (element is Rectangle { Tag: double offset } line)
                 Canvas.SetLeft(line, TimeToX(offset));
-            else if (element is Thumb { Tag: bool start } handle && RangeList.SelectedItem is KeepRange selected)
+            else if (element is Thumb { Tag: bool start } handle && SelectedSection is { } selected)
                 Canvas.SetLeft(handle, HandleLeft(start ? selected.Start : selected.End, start));
         }
     }
@@ -560,7 +565,7 @@ public partial class MainWindow : Window
     {
         if (TotalDuration <= 0 || TimelineScroll.ViewportWidth <= 0) return;
         double anchor = e.GetPosition(TimelineScroll).X;
-        if (draggingMarker && RangeList.SelectedItem is KeepRange range)
+        if (draggingMarker && SelectedSection is { } range)
             anchor = TimeToX(draggingStartMarker ? range.Start : range.End) - TimelineScroll.HorizontalOffset;
         double contentViewport = TimelineScroll.ViewportWidth - 2 * HandleWidth;
         if (contentViewport <= 0) return;
@@ -574,19 +579,16 @@ public partial class MainWindow : Window
         UpdateTimelineWidth();
         TimelineScroll.UpdateLayout();
         TimelineScroll.ScrollToHorizontalOffset(zoom.Offset);
-        ZoomLabel.Text = $"{timelineZoom * 100:0}%";
         ScheduleThumbnailRefresh();
     }
     private void DrawPlayhead()
     {
-        if (PlayheadOverlay is null || PositionSlider is null) return;
+        if (PlayheadOverlay is null) return;
         PlayheadOverlay.Children.Clear();
         if (TotalDuration <= 0 || Timeline.ActualWidth <= 0) return;
-        double x = Math.Clamp(TimeToX(PositionSlider.Value), 0, Timeline.ActualWidth);
-        // At a selected cut point the handle's inner edge already marks the position; a line there would look like a gap.
-        if (RangeList.SelectedItem is KeepRange selected &&
-            (Math.Abs(x - TimeToX(selected.Start)) < 2 || Math.Abs(x - TimeToX(selected.End)) < 2)) return;
-        var line = new Rectangle { Width = 2, Height = Timeline.ActualHeight, Fill = Brushes.White };
+        double x = Math.Clamp(TimeToX(position), 0, Timeline.ActualWidth);
+        var line = new Rectangle { Width = 2, Height = Timeline.ActualHeight - 8, Fill = Brushes.White };
+        Canvas.SetTop(line, 8);
         Canvas.SetLeft(line, Math.Clamp(x - 1, 0, Math.Max(0, Timeline.ActualWidth - 2)));
         PlayheadOverlay.Children.Add(line);
         var tip = new Polygon { Points = new PointCollection { new(0, 0), new(12, 0), new(6, 8) }, Fill = Brushes.White };
@@ -601,24 +603,19 @@ public partial class MainWindow : Window
                 if (node is Thumb) return;
         }
         if (draggingMarker || TotalDuration <= 0 || ContentWidth <= 0) return;
-        PositionSlider.Value = XToTime(e.GetPosition(Timeline).X);
-        SelectSectionAt(PositionSlider.Value);
-        SeekCurrent();
-    }
-    private void PositionSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => DrawPlayhead();
-    private void PositionSlider_MouseUp(object sender, MouseButtonEventArgs e)
-    {
-        draggingPosition = false;
-        SeekCurrent();
+        SeekTo(XToTime(e.GetPosition(Timeline).X));
     }
 
-    private void SeekCurrent()
+    private void SeekTo(double time)
     {
         if (TotalDuration <= 0) return;
         try
         {
-            double start = Math.Min(PositionSlider.Value, Math.Max(0, TotalDuration - 0.001));
-            StartPreview(TimelineSections.Build(videos, TimelineSections.PlayFrom(sections, start, TotalDuration)));
+            SetPosition(time);
+            RebuildPreviewAtPosition();
+            var (video, local) = Locate(position);
+            SelectVideo(video);
+            StartMedia(video, local);
         }
         catch (Exception ex) { ShowError("Cannot preview from this position", ex); }
     }
@@ -634,18 +631,29 @@ public partial class MainWindow : Window
         }
         throw new InvalidOperationException("No videos are loaded.");
     }
-    private bool SelectSectionAt(double time)
+    private void SelectVideo(VideoItem video)
     {
-        var section = sections.FirstOrDefault(s => time >= s.Start && time < s.End);
-        if (section is not null) RangeList.SelectedItem = section;
-        return section is not null;
+        selectingForPreview = true;
+        try { VideoList.SelectedItem = video; }
+        finally { selectingForPreview = false; }
+    }
+
+    private void RebuildPreviewAtPosition()
+    {
+        double start = Math.Min(position, Math.Max(0, TotalDuration - 0.001));
+        var ranges = TimelineSections.PlayFrom(sections, start, TotalDuration);
+        preview = TimelineSections.Build(videos, ranges);
+        var (video, local) = Locate(start);
+        // An explicit seek still shows the requested source, even if it is excluded from automatic playback.
+        if (preview.Count == 0 || preview[0].Video != video)
+            preview.Insert(0, new Segment(video, local, Math.Min(video.Duration, ranges[0].End - OffsetOf(video))));
+        previewIndex = 0;
     }
 
     // Moves the playhead and scrolls the zoomed timeline so a newly started section is visible.
     private void JumpTimelineTo(double time)
     {
-        if (draggingPosition) return;
-        PositionSlider.Value = time;
+        SetPosition(time);
         if (draggingScrollbar || TotalDuration <= 0 || Timeline.ActualWidth <= 0) return;
         double x = TimeToX(time);
         if (x < TimelineScroll.HorizontalOffset || x > TimelineScroll.HorizontalOffset + TimelineScroll.ViewportWidth * 0.8)
@@ -656,55 +664,32 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RangeList_MouseUp(object sender, MouseButtonEventArgs e)
-    {
-        if (e.OriginalSource is not DependencyObject source) return;
-        for (DependencyObject? node = source; node is not null && node != RangeList; node = VisualTreeHelper.GetParent(node))
-        {
-            if (node is ListBoxItem && RangeList.SelectedIndex >= 0)
-            {
-                BeginPreview(RangeList.SelectedIndex);
-                break;
-            }
-        }
-    }
-
     private void PreviewMarker(double boundary, bool start)
     {
         if (TotalDuration <= 0) return;
-        PositionSlider.Value = boundary;
+        SetPosition(boundary);
         double sample = start ? boundary : Math.Max(0, boundary - 0.001);
         var (video, local) = Locate(sample);
-        selectingForPreview = true;
-        try { VideoList.SelectedItem = video; }
-        finally { selectingForPreview = false; }
-        long target = (long)Math.Round(local * 1000);
-        PlaybackLabel.Text = $"Frame at {TimeText.Format(boundary)}";
+        SelectVideo(video);
         preview = null;
-        continueSection = null;
-        UpdateContinueButton();
-        player.Mute = true;
-        if (loadedVideo == video && player.State == VLCState.Paused && player.IsSeekable)
-        {
-            // LibVLC does not redraw reliably when seeking while paused, so resume briefly, seek, then pause again.
-            player.SetPause(false);
-        }
-        else if (loadedVideo != video || player.State is VLCState.Stopped or VLCState.Ended or VLCState.NothingSpecial or VLCState.Error)
-            StartMedia(video, local);
-        seekTarget = target;
-        pendingSeek = true;
-        pauseAfterSeek = true;
+        playbackMode = PlaybackMode.Stopped;
+        StartMedia(video, local);
+        UpdateControls();
     }
 
     private void PlayClip_Click(object sender, RoutedEventArgs e)
     {
-        if (RangeList.SelectedIndex < 0) { MessageBox.Show(this, "Select a section first."); return; }
-        BeginPreview(RangeList.SelectedIndex);
+        if (SelectedSection is not null) BeginPreview(selectedSectionIndex);
     }
 
-    private void Preview_Click(object sender, RoutedEventArgs e)
+    private void PreviousSection_Click(object sender, RoutedEventArgs e)
     {
-        BeginPreview(0);
+        if (SelectedSection is not null && selectedSectionIndex > 0) BeginPreview(selectedSectionIndex - 1);
+    }
+
+    private void NextSection_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedSection is not null && selectedSectionIndex + 1 < sections.Count) BeginPreview(selectedSectionIndex + 1);
     }
 
     private void BeginPreview(int sectionIndex)
@@ -721,40 +706,13 @@ public partial class MainWindow : Window
         try
         {
             var range = TimelineSections.BoundaryPreview(section, startMarker);
-            StartPreview(TimelineSections.Build(videos, [range]));
-            continueSection = section;
-            UpdateContinueButton();
+            StartPreview(TimelineSections.Build(videos, [range, .. sections.Where(s => s.Start >= section.End)]));
         }
         catch (Exception ex) { ShowError("Cannot preview section", ex); }
     }
 
-    private List<KeepRange> ContinueRanges() =>
-        continueSection is { } section && sections.Contains(section)
-            ? TimelineSections.ContinueAfter(sections, section, PositionSlider.Value)
-            : [];
-
-    private void UpdateContinueButton()
-    {
-        bool enabled = continueSection is not null && ContinueRanges().Count > 0;
-        if (ContinueButton.IsEnabled != enabled) ContinueButton.IsEnabled = enabled;
-    }
-
-    private void Continue_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var ranges = ContinueRanges();
-            if (ranges.Count > 0) StartPreview(TimelineSections.Build(videos, ranges));
-        }
-        catch (Exception ex) { ShowError("Cannot continue playback", ex); }
-    }
-
     private void StartPreview(List<Segment> segments)
     {
-        continueSection = null;
-        UpdateContinueButton();
-        pauseAfterSeek = false;
-        player.Mute = false;
         if (segments.Count == 0)
         {
             StopPlayback();
@@ -763,37 +721,41 @@ public partial class MainWindow : Window
         }
         preview = segments;
         previewIndex = 0;
+        playbackMode = PlaybackMode.Playing;
+        UpdateControls();
         StartPreviewSegment();
     }
 
     private void StartPreviewSegment()
     {
-        if (preview is null || previewIndex >= preview.Count) { StopPlayback(); PlaybackLabel.Text = "Preview finished"; return; }
+        if (preview is null || previewIndex >= preview.Count) { StopPlayback(); return; }
         var segment = preview[previewIndex];
-        selectingForPreview = true;
-        try { VideoList.SelectedItem = segment.Video; }
-        finally { selectingForPreview = false; }
+        SelectVideo(segment.Video);
         double globalStart = OffsetOf(segment.Video) + segment.Start;
-        selectingForPreview = true;
-        try { SelectSectionAt(globalStart); } finally { selectingForPreview = false; }
         JumpTimelineTo(globalStart);
-        PlaybackLabel.Text = $"Loading section {previewIndex + 1} of {preview.Count}…";
         StartMedia(segment.Video, segment.Start);
     }
 
     private void StartMedia(VideoItem video, double seconds)
     {
+        playbackRevision++;
+        player.Mute = playbackMode != PlaybackMode.Playing;
+        pendingSeek = true;
+        seekIssued = false;
+        seekIssuedAt = Environment.TickCount64;
+        seekTarget = (long)Math.Round(seconds * 1000);
         if (loadedVideo == video && player.IsSeekable &&
             (player.IsPlaying || player.State == VLCState.Paused))
         {
-            pendingSeek = true;
-            seekTarget = (long)Math.Round(seconds * 1000);
+            // Briefly resume to render seeks made while showing a still frame.
             player.SetPause(false);
             return;
         }
         CoverWithCurrentFrame();
         player.Stop();
+        player.Mute = true;
         using var media = new LibVLCSharp.Shared.Media(libVlc, new Uri(video.Path));
+        // Initialize the decoder before seeking; some streams only provide video headers at the start.
         if (!player.Play(media))
         {
             StopPlayback();
@@ -801,66 +763,105 @@ public partial class MainWindow : Window
             return;
         }
         loadedVideo = video;
-        pendingSeek = true;
-        seekTarget = (long)Math.Round(seconds * 1000);
+        player.Volume = (int)VolumeSlider.Value;
     }
 
     private void Timer_Tick(object? sender, EventArgs e)
     {
-        if (continueSection is not null) UpdateContinueButton();
         if (coverHideTicks > 0 && !pendingSeek && player.State is VLCState.Playing or VLCState.Paused && --coverHideTicks == 0)
         {
             coverHideTicks = -1;
             FrameCover.Visibility = Visibility.Collapsed;
         }
+        if (playbackMode == PlaybackMode.Playing && player.State == VLCState.Paused)
+        {
+            player.SetPause(false);
+            return;
+        }
         if (pendingSeek && player.IsPlaying && (seekTarget == 0 || player.IsSeekable))
         {
-            player.Time = seekTarget;
+            player.Volume = (int)VolumeSlider.Value;
+            player.Mute = playbackMode != PlaybackMode.Playing || !seekIssued;
+            if (!seekIssued)
+            {
+                if (player.VoutCount == 0 || (seekTarget > 0 && player.Time <= 0)) return;
+                seekIssuedAt = Environment.TickCount64;
+                player.Time = seekTarget;
+                seekIssued = true;
+                return;
+            }
+            long mediaTime = player.Time;
+            if (playbackMode != PlaybackMode.Playing)
+            {
+                // Still frames need the target; running playback must tolerate imprecise native seeks.
+                long elapsed = Math.Max(0, Environment.TickCount64 - seekIssuedAt);
+                if (player.VoutCount == 0 || mediaTime < seekTarget - 500 || mediaTime > seekTarget + elapsed + 500) return;
+            }
             pendingSeek = false;
             if (FrameCover.Visibility == Visibility.Visible) coverHideTicks = 6;
-            if (pauseAfterSeek)
+            if (playbackMode != PlaybackMode.Playing)
             {
-                pauseAfterSeek = false;
+                if (mediaTime > seekTarget + 500) player.Time = seekTarget;
                 player.SetPause(true);
             }
             return;
         }
-        if (pendingSeek || !player.IsPlaying) return;
-        double position = Math.Max(0, player.Time / 1000d);
-        if (!draggingPosition)
+        if (pendingSeek) return;
+        if (playbackMode != PlaybackMode.Playing)
         {
-            PositionSlider.Value = position + (loadedVideo is null ? 0 : OffsetOf(loadedVideo));
-            if (timelineZoom > 1 && TotalDuration > 0 && !draggingMarker)
+            if (player.IsPlaying) player.SetPause(true);
+            return;
+        }
+        if (!player.IsPlaying) return;
+        double local = Math.Max(0, player.Time / 1000d);
+        SetPosition(local + (loadedVideo is null ? 0 : OffsetOf(loadedVideo)));
+        if (timelineZoom > 1 && TotalDuration > 0 && !draggingMarker)
+        {
+            double x = TimeToX(position);
+            bool userBrowsing = draggingScrollbar || DateTime.UtcNow - lastManualScroll < TimeSpan.FromSeconds(4);
+            if (!userBrowsing && (x < TimelineScroll.HorizontalOffset || x > TimelineScroll.HorizontalOffset + TimelineScroll.ViewportWidth))
             {
-                double x = TimeToX(PositionSlider.Value);
-                bool userBrowsing = draggingScrollbar || DateTime.UtcNow - lastManualScroll < TimeSpan.FromSeconds(4);
-                if (!userBrowsing && (x < TimelineScroll.HorizontalOffset || x > TimelineScroll.HorizontalOffset + TimelineScroll.ViewportWidth))
-                {
-                    autoScrollTarget = Math.Max(0, x - TimelineScroll.ViewportWidth * 0.2);
-                    TimelineScroll.ScrollToHorizontalOffset(autoScrollTarget);
-                }
+                autoScrollTarget = Math.Max(0, x - TimelineScroll.ViewportWidth * 0.2);
+                TimelineScroll.ScrollToHorizontalOffset(autoScrollTarget);
             }
         }
-        PlaybackLabel.Text = preview is null ? TimeText.Format(PositionSlider.Value) :
-            $"Preview {previewIndex + 1}/{preview.Count}  {TimeText.Format(PositionSlider.Value)}";
         // Advance slightly early so the player never reaches the file end, where LibVLC clears the picture.
         double fileEnd = loadedVideo?.Duration ?? double.MaxValue;
-        if (preview is not null && position >= Math.Min(preview[previewIndex].End, fileEnd - 0.12))
+        if (preview is not null && local >= Math.Min(preview[previewIndex].End, Math.Max(preview[previewIndex].Start, fileEnd - 0.12)))
         {
             previewIndex++;
             StartPreviewSegment();
         }
-        else if (preview is null && position >= fileEnd - 0.12)
-            player.SetPause(true);
+        else if (preview is null && local >= fileEnd - 0.12)
+            StopPlayback();
     }
 
-    private void Player_EncounteredError(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(() => { StopPlayback(); StatusLabel.Text = "Playback failed. Check that the source file is accessible and supported."; });
-
-    private void Player_EndReached(object? sender, EventArgs e) =>
+    private void Player_EncounteredError(object? sender, EventArgs e)
+    {
+        long revision = playbackRevision;
         Dispatcher.BeginInvoke(() =>
         {
-            if (player.State != VLCState.Ended) return;
+            if (revision != playbackRevision) return;
+            StopPlayback();
+            StatusLabel.Text = "Playback failed. Check that the source file is accessible and supported.";
+        });
+    }
+
+    private void Player_EndReached(object? sender, EventArgs e)
+    {
+        long revision = playbackRevision;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (revision != playbackRevision || player.State != VLCState.Ended) return;
+            if (pendingSeek && loadedVideo is { } seekingVideo)
+            {
+                if (seekTarget / 1000d < seekingVideo.Duration - 0.15 || playbackMode != PlaybackMode.Playing)
+                {
+                    StartMedia(seekingVideo, Math.Min(seekTarget / 1000d, Math.Max(0, seekingVideo.Duration - 0.15)));
+                    return;
+                }
+            }
+            if (playbackMode != PlaybackMode.Playing) return;
             if (preview is not null && previewIndex + 1 < preview.Count)
             {
                 previewIndex++;
@@ -869,30 +870,71 @@ public partial class MainWindow : Window
             else if (loadedVideo is { } video)
             {
                 // Reload the finished file and hold its last frame instead of showing a blank picture.
-                preview = null;
-                player.Mute = true;
+                StopPlayback();
                 StartMedia(video, Math.Max(0, video.Duration - 0.15));
-                pauseAfterSeek = true;
-                PlaybackLabel.Text = "Preview finished";
             }
         });
-
-    private void Pause_Click(object sender, RoutedEventArgs e)
-    {
-        if (player.Media is null) return;
-        player.Mute = false;
-        if (player.IsPlaying) player.SetPause(true);
-        else if (player.State == VLCState.Paused) player.SetPause(false);
     }
-    private void Stop_Click(object sender, RoutedEventArgs e) => StopPlayback();
+
+    private void PlayPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (playbackMode == PlaybackMode.Playing)
+        {
+            playbackMode = PlaybackMode.Paused;
+            player.Mute = true;
+            if (!pendingSeek)
+            {
+                if (loadedVideo is not null) SetPosition(OffsetOf(loadedVideo) + Math.Max(0, player.Time / 1000d));
+                player.SetPause(true);
+            }
+        }
+        else if (playbackMode == PlaybackMode.Paused)
+        {
+            playbackMode = PlaybackMode.Playing;
+            player.Mute = pendingSeek && !seekIssued;
+            if (!pendingSeek && loadedVideo is not null)
+            {
+                seekTarget = (long)Math.Round((position - OffsetOf(loadedVideo)) * 1000);
+                pendingSeek = true;
+                seekIssued = true;
+                seekIssuedAt = Environment.TickCount64;
+            }
+            player.SetPause(false);
+        }
+        else BeginPreview(0);
+        UpdateControls();
+    }
+
+    private void Stop_Click(object sender, RoutedEventArgs e)
+    {
+        StopPlayback();
+        var first = TimelineSections.Build(videos, sections).FirstOrDefault();
+        if (first is not null) SeekTo(OffsetOf(first.Video) + first.Start);
+    }
 
     // Stopping keeps the current frame visible; the player is only paused.
     private void StopPlayback()
     {
+        playbackRevision++;
+        playbackMode = PlaybackMode.Stopped;
         preview = null;
         pendingSeek = false;
-        pauseAfterSeek = false;
+        player.Mute = true;
         if (player.IsPlaying) player.SetPause(true);
+        UpdateControls();
+    }
+
+    private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (player is not null) player.Volume = (int)Math.Round(e.NewValue);
+    }
+
+    private void VolumePopup_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape) return;
+        VolumePopup.IsOpen = false;
+        VolumeButton.Focus();
+        e.Handled = true;
     }
 
     private void CoverWithCurrentFrame()
@@ -915,7 +957,10 @@ public partial class MainWindow : Window
         catch (Exception) { }
         finally { try { File.Delete(file); } catch (IOException) { } }
     }
-    private void InvalidatePreview() { if (preview is not null) { StopPlayback(); PlaybackLabel.Text = "Preview stopped: selections changed"; } }
+    private void InvalidatePreview()
+    {
+        if (preview is not null || playbackMode != PlaybackMode.Stopped) StopPlayback();
+    }
 
     private async void Export_Click(object sender, RoutedEventArgs e)
     {

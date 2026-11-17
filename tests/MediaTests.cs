@@ -45,13 +45,17 @@ public class MediaTests
     }
 
     [Fact]
-    public void ContinueAfterPlaysOnlyRemainingKeptSections()
+    public void SectionContextUsesHalfOpenBoundariesAndGaps()
     {
-        KeepRange[] sections = [new(2, 5), new(10, 20), new(30, 40)];
-        var section = new KeepRange(10, 20);
-        Assert.Equal(new KeepRange[] { new(17, 20), new(30, 40) }, TimelineSections.ContinueAfter(sections, section, 17));
-        Assert.Equal(new KeepRange[] { new(30, 40) }, TimelineSections.ContinueAfter(sections, section, 20));
-        Assert.Empty(TimelineSections.ContinueAfter(sections, new KeepRange(30, 40), 40));
+        KeepRange[] sections = [new(2, 5), new(5, 10), new(15, 20)];
+        Assert.Equal(-1, TimelineSections.IndexAt(sections, 0));
+        Assert.Equal(0, TimelineSections.IndexAt(sections, 2));
+        Assert.Equal(1, TimelineSections.IndexAt(sections, 5));
+        Assert.Equal(-1, TimelineSections.IndexAt(sections, 10));
+        Assert.Equal(2, TimelineSections.IndexAt(sections, 19.999));
+        Assert.Equal(-1, TimelineSections.IndexAt(sections, 20));
+        Assert.Equal(new KeepRange[] { new(0, 2), new(10, 15), new(20, 25) }, TimelineSections.Gaps(sections, 25));
+        Assert.Empty(TimelineSections.Gaps([new(0, 25)], 25));
     }
 
     [Fact]
@@ -182,16 +186,6 @@ public class MediaTests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => MediaTools.ProbeIfVideoAsync(video, cancel.Token));
         }
         finally { Directory.Delete(directory, true); }
-    }
-
-    [Theory]
-    [InlineData("00:01:02.500", 62.5)]
-    [InlineData("2.25", 2.25)]
-    [InlineData("25:01:02.500", 90062.5)]
-    public void ParsesPreciseTimes(string text, double expected)
-    {
-        Assert.True(TimeText.TryParse(text, out var seconds));
-        Assert.Equal(expected, seconds, 3);
     }
 
     [Fact]
