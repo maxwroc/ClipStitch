@@ -93,6 +93,23 @@ public class TimelineRefreshTests
         (T)typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
 
     [Fact]
+    public async Task StartupPlaceholderGivesWayToTheVideoPreview()
+    {
+        await WithVideos(async window =>
+        {
+            var placeholder = Field<Grid>(window, "PreviewPlaceholder");
+            var view = Field<FrameworkElement>(window, "VideoView");
+            Assert.True(placeholder.IsVisible);
+            Assert.IsType<LinearGradientBrush>(placeholder.Background);
+            Assert.Equal(Visibility.Hidden, view.Visibility);
+            Invoke(window, "SeekTo", 3d);
+            await AtFrame(window, 3, true);
+            Assert.Equal(Visibility.Collapsed, placeholder.Visibility);
+            Assert.True(view.IsVisible);
+        });
+    }
+
+    [Fact]
     public async Task PlaybackIntentSurvivesSeeksDeletionAndStop()
     {
         await WithVideos(async window =>
@@ -397,6 +414,9 @@ public class TimelineRefreshTests
         {
             var overlay = Field<Canvas>(window, "PlayheadOverlay");
             var gaps = Field<Canvas>(window, "GapOverlay");
+            var container = Assert.IsType<Grid>(Field<ScrollViewer>(window, "TimelineScroll").Parent);
+            Assert.Equal(new Thickness(0), Assert.IsType<Border>(container.Parent).BorderThickness);
+            double selectionTop = Field<Canvas>(window, "RangeOverlay").Margin.Top;
             Assert.False(overlay.IsHitTestVisible);
             Assert.False(gaps.IsHitTestVisible);
             Assert.Equal(4, gaps.Children.Count);
@@ -406,7 +426,11 @@ public class TimelineRefreshTests
             {
                 Invoke(window, "SetPosition", boundary);
                 Assert.Equal(2, overlay.Children.Count);
-                Assert.Equal(8, Canvas.GetTop(overlay.Children[0]));
+                var line = Assert.IsType<Rectangle>(overlay.Children[0]);
+                var tip = Assert.IsType<System.Windows.Shapes.Polygon>(overlay.Children[1]);
+                Assert.Equal(selectionTop, Canvas.GetTop(line));
+                Assert.Equal(selectionTop, Canvas.GetTop(tip) + tip.Points.Max(p => p.Y));
+                Assert.Equal(Field<Grid>(window, "Timeline").ActualHeight, Canvas.GetTop(line) + line.Height);
                 if (boundary is 0 or 4 or 9 or 16 or 20) AssertSectionControlsDisabled(window);
             }
             Invoke(window, "SetPosition", 7d);

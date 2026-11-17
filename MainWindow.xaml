@@ -87,11 +87,27 @@
                     <RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Border Background="Black" MinHeight="160">
-                    <vlc:VideoView x:Name="VideoView">
-                        <Grid x:Name="FrameCover" Background="Black" Visibility="Collapsed">
-                            <Image x:Name="FrameCoverImage" Stretch="Uniform"/>
+                    <Grid>
+                        <Grid x:Name="PreviewPlaceholder" IsHitTestVisible="False">
+                            <Grid.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                    <GradientStop Color="#1A3452" Offset="0"/>
+                                    <GradientStop Color="#153449" Offset="0.45"/>
+                                    <GradientStop Color="#164A45" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Grid.Background>
+                            <Border Width="96" Height="96" CornerRadius="48" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    Background="#12FFFFFF" BorderBrush="#537FCAA9" BorderThickness="1">
+                                <Path Data="M 4,2 L 18,10 L 4,18 Z" Fill="#DFF9EC" Width="30" Height="34"
+                                      Stretch="Uniform" Margin="6,0,0,0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
                         </Grid>
-                    </vlc:VideoView>
+                        <vlc:VideoView x:Name="VideoView" Visibility="Hidden">
+                            <Grid x:Name="FrameCover" Background="Black" Visibility="Collapsed">
+                                <Image x:Name="FrameCoverImage" Stretch="Uniform"/>
+                            </Grid>
+                        </vlc:VideoView>
+                    </Grid>
                 </Border>
                 <StackPanel Grid.Row="1">
                     <DockPanel Margin="0,6">
@@ -153,7 +169,7 @@
                         <TextBlock x:Name="PlaybackLabel" Text="00:00:00.000 / 00:00:00.000" HorizontalAlignment="Right"
                                    FontSize="11" Foreground="#A7C0D3" Margin="5,0" TextTrimming="CharacterEllipsis"/>
                     </DockPanel>
-                    <Border BorderBrush="#35516B" BorderThickness="1" CornerRadius="6" Background="#101E30" ClipToBounds="True">
+                    <Border Background="#101E30" ClipToBounds="True">
                         <Grid>
                         <ScrollViewer x:Name="TimelineScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
                                       SizeChanged="TimelineScroll_SizeChanged" ScrollChanged="TimelineScroll_ScrollChanged" PreviewMouseWheel="TimelineScroll_MouseWheel"

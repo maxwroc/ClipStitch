@@ -587,11 +587,12 @@ public partial class MainWindow : Window
         PlayheadOverlay.Children.Clear();
         if (TotalDuration <= 0 || Timeline.ActualWidth <= 0) return;
         double x = Math.Clamp(TimeToX(position), 0, Timeline.ActualWidth);
-        var line = new Rectangle { Width = 2, Height = Timeline.ActualHeight - 8, Fill = Brushes.White };
-        Canvas.SetTop(line, 8);
+        var line = new Rectangle { Width = 2, Height = TimelineContentHeight, Fill = Brushes.White };
+        Canvas.SetTop(line, PlayheadHeaderHeight);
         Canvas.SetLeft(line, Math.Clamp(x - 1, 0, Math.Max(0, Timeline.ActualWidth - 2)));
         PlayheadOverlay.Children.Add(line);
         var tip = new Polygon { Points = new PointCollection { new(0, 0), new(12, 0), new(6, 8) }, Fill = Brushes.White };
+        Canvas.SetTop(tip, PlayheadHeaderHeight - 8);
         Canvas.SetLeft(tip, Math.Clamp(x - 6, 0, Math.Max(0, Timeline.ActualWidth - 12)));
         PlayheadOverlay.Children.Add(tip);
     }
@@ -738,6 +739,8 @@ public partial class MainWindow : Window
 
     private void StartMedia(VideoItem video, double seconds)
     {
+        PreviewPlaceholder.Visibility = Visibility.Collapsed;
+        VideoView.Visibility = Visibility.Visible;
         playbackRevision++;
         player.Mute = playbackMode != PlaybackMode.Playing;
         pendingSeek = true;
