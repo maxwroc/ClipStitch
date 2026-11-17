@@ -117,15 +117,30 @@ public static class MediaTools
     private static double ParseDouble(string value) =>
         double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) ? result : 0;
 
-    public static async Task<BitmapImage?> ThumbnailAsync(VideoItem video, double time, CancellationToken token)
+    public static async Task<BitmapImage> ThumbnailAsync(VideoItem video, double time, CancellationToken token)
     {
         string file = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"clipstitch-{Guid.NewGuid():N}.jpg");
         try
         {
-            var r = await RunAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-ss", TimeText.Number(time),
-                "-i", video.Path, "-frames:v", "1", "-vf", "scale=160:90:force_original_aspect_ratio=decrease", "-y", file], token);
+            const double seekBackoffSeconds = 5;
+            double endMargin = Math.Min(seekBackoffSeconds, video.Duration * 0.2);
+            double seekTime = Math.Clamp(time, 0, Math.Max(0, video.Duration - endMargin));
+            Task<(int ExitCode, string Stdout, string Stderr)> ExtractFrameAsync(double position) =>
+                RunAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-ss", TimeText.Number(position),
+                    "-noaccurate_seek", "-i", video.Path, "-map", $"0:{video.VideoStreamIndex}", "-frames:v", "1",
+                    "-vf", "scale=160:90:force_original_aspect_ratio=decrease", "-y", file], token);
+
+            var r = await ExtractFrameAsync(seekTime);
+            foreach (double retryTime in new[] { Math.Max(0, seekTime - seekBackoffSeconds), 0 }.Distinct())
+            {
+                if (File.Exists(file) && new FileInfo(file).Length > 0) break;
+                if (retryTime == seekTime) continue;
+                // Thumbnail precision is unimportant; an earlier or opening frame avoids a full decode.
+                r = await ExtractFrameAsync(retryTime);
+            }
             if (r.ExitCode != 0) throw new InvalidOperationException(r.Stderr.Trim());
-            if (!File.Exists(file)) throw new InvalidOperationException("No thumbnail frame was produced.");
+            if (!File.Exists(file) || new FileInfo(file).Length == 0)
+                throw new InvalidOperationException($"No thumbnail frame was produced for {Path.GetFileName(video.Path)} at {TimeText.Format(time)}.");
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
             bitmap.CacheOption = BitmapCacheOption.OnLoad;

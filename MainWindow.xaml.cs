@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -37,6 +38,8 @@ public partial class MainWindow : Window
     private bool pauseAfterSeek;
     private int coverHideTicks = -1;
     private bool draggingScrollbar;
+    private bool inSizeMove;
+    private bool resizeRefreshPending;
     private DateTime lastManualScroll = DateTime.MinValue;
     private double autoScrollTarget = -1;
     private double timelineZoom = 1;
@@ -74,9 +77,16 @@ public partial class MainWindow : Window
         thumbnailRefreshTimer.Tick += (_, _) =>
         {
             thumbnailRefreshTimer.Stop();
+            if (inSizeMove)
+            {
+                resizeRefreshPending = true;
+                return;
+            }
             if (folderCancellation is not null && videos.Count > 0)
                 _ = LoadTimelineThumbnailsAsync(folderCancellation.Token);
         };
+        SourceInitialized += (_, _) =>
+            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle).AddHook(WindowMessageHook);
         player.EncounteredError += Player_EncounteredError;
         player.EndReached += Player_EndReached;
         Closed += (_, _) =>
@@ -100,6 +110,9 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) != true) return;
         folderCancellation?.Cancel();
         thumbnailCancellation?.Cancel();
+        thumbnailRefreshTimer.Stop();
+        resizeRefreshPending = false;
+        ThumbnailLoadingBadge.Visibility = Visibility.Collapsed;
         StopPlayback();
         var cancellation = new CancellationTokenSource();
         folderCancellation = cancellation;
@@ -140,7 +153,7 @@ public partial class MainWindow : Window
                 PositionSlider.Maximum = TotalDuration;
                 RangeList.SelectedIndex = 0;
                 VideoList.SelectedIndex = 0;
-                _ = LoadTimelineThumbnailsAsync(cancellation.Token);
+                ScheduleThumbnailRefresh();
             }
             StatusLabel.Text = $"Loaded {videos.Count} video(s)." + (failures.Count > 0 ? $" {failures.Count} could not be opened." : "");
             if (failures.Count > 0) MessageBox.Show(this, string.Join("\n\n", failures), "Some videos could not be opened", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -164,7 +177,6 @@ public partial class MainWindow : Window
         thumbnailCancellation?.Cancel();
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(folderToken);
         thumbnailCancellation = cancellation;
-        bool superseded = false;
         try
         {
             double width = ContentWidth;
@@ -183,7 +195,7 @@ public partial class MainWindow : Window
                 var (video, local) = Locate((start + end) / 2);
                 var image = await MediaTools.ThumbnailAsync(video, local, cancellation.Token);
                 cancellation.Token.ThrowIfCancellationRequested();
-                if (image is not null) fresh.Add((start, end, image));
+                fresh.Add((start, end, image));
                 ShowThumbnailLoading(i + 1, count);
             }
             cancellation.Token.ThrowIfCancellationRequested();
@@ -191,12 +203,12 @@ public partial class MainWindow : Window
             thumbnailImages.AddRange(fresh);
             DrawThumbnails();
         }
-        catch (OperationCanceledException) { superseded = thumbnailCancellation != cancellation || thumbnailRefreshTimer.IsEnabled; }
+        catch (OperationCanceledException) { }
         catch (Exception ex) { StatusLabel.Text = $"Thumbnail generation failed: {ex.Message}"; }
         finally
         {
             // Keep the badge while a newer refresh is pending or running.
-            if (!superseded && thumbnailCancellation == cancellation && !thumbnailRefreshTimer.IsEnabled)
+            if (thumbnailCancellation == cancellation && !thumbnailRefreshTimer.IsEnabled && !resizeRefreshPending)
                 ThumbnailLoadingBadge.Visibility = Visibility.Collapsed;
         }
     }
@@ -434,6 +446,8 @@ public partial class MainWindow : Window
         if (draggingMarker) RepositionOverlay();
         else DrawRanges();
         DrawPlayhead();
+        if (e.WidthChanged && thumbnailRefreshTimer is not null && videos.Count > 0 && !draggingScrollbar)
+            ScheduleThumbnailRefresh();
     }
 
     private void RepositionOverlay()
@@ -452,7 +466,28 @@ public partial class MainWindow : Window
                 Canvas.SetLeft(handle, HandleLeft(start ? selected.Start : selected.End, start));
         }
     }
-    private void TimelineScroll_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateTimelineWidth();
+    private void TimelineScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateTimelineWidth();
+        if (e.WidthChanged && thumbnailRefreshTimer is not null && videos.Count > 0 && !draggingScrollbar)
+            ScheduleThumbnailRefresh();
+    }
+
+    private IntPtr WindowMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        const int WmEnterSizeMove = 0x0231, WmExitSizeMove = 0x0232;
+        if (message == WmEnterSizeMove) inSizeMove = true;
+        else if (message == WmExitSizeMove)
+        {
+            inSizeMove = false;
+            if (resizeRefreshPending)
+            {
+                resizeRefreshPending = false;
+                if (videos.Count > 0 && !draggingScrollbar) ScheduleThumbnailRefresh();
+            }
+        }
+        return IntPtr.Zero;
+    }
     private void UpdateTimelineWidth()
     {
         if (TimelineScroll is null || Timeline is null) return;
@@ -479,6 +514,7 @@ public partial class MainWindow : Window
             draggingScrollbar = true;
             thumbnailRefreshTimer.Stop();
             thumbnailCancellation?.Cancel();
+            resizeRefreshPending = false;
             ThumbnailLoadingBadge.Visibility = Visibility.Collapsed;
         }
     }
@@ -498,7 +534,13 @@ public partial class MainWindow : Window
     private void ScheduleThumbnailRefresh()
     {
         thumbnailRefreshTimer.Stop();
-        thumbnailRefreshTimer.Start();
+        thumbnailCancellation?.Cancel();
+        if (inSizeMove) resizeRefreshPending = true;
+        else
+        {
+            resizeRefreshPending = false;
+            thumbnailRefreshTimer.Start();
+        }
         ShowThumbnailLoading(null, 0);
     }
 

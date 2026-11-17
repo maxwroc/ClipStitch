@@ -244,6 +244,30 @@ public class MediaTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Theory]
+    [InlineData(3, 2.5)]
+    [InlineData(30, 29.9)]
+    public async Task ThumbnailIsGeneratedWhenRequestedPositionIsPastVideoStream(double duration, double requested)
+    {
+        string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ClipStitch-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string path = System.IO.Path.Combine(directory, "audio-tail.mp4");
+            await Ffmpeg("-f", "lavfi", "-i", "color=c=red:s=64x64:r=25:d=1",
+                "-f", "lavfi", "-i", $"sine=frequency=440:duration={TimeText.Number(duration)}",
+                "-c:v", "libx264", "-c:a", "aac", path);
+            var video = await MediaTools.ProbeAsync(path, CancellationToken.None);
+            Assert.InRange(video.Duration, duration - 0.1, duration + 0.1);
+            var image = await MediaTools.ThumbnailAsync(video, requested, CancellationToken.None);
+            var converted = new System.Windows.Media.Imaging.FormatConvertedBitmap(image, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+            var pixel = new byte[4];
+            converted.CopyPixels(new System.Windows.Int32Rect(0, 0, 1, 1), pixel, 4, 0);
+            Assert.True(pixel[2] > pixel[0] + 100, "A frame from the red video should be produced even after its video stream ends.");
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
     private static async Task Ffmpeg(params string[] args)
     {
         var result = await MediaTools.RunAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", .. args], CancellationToken.None);
