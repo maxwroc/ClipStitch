@@ -15,6 +15,8 @@ Install the .NET 10 Windows Desktop Runtime (x64), then run `ClipStitch.exe` fro
 
 Selections are not saved when the app closes. Export includes only kept portions of checked videos.
 
+Opening another folder cancels the previous scan and thumbnail generation and clears its preview. Folder enumeration and playback teardown run off the UI thread so the window stays responsive while switching folders.
+
 Manual seeks into shaded gaps preserve the clicked position and transport state: if playing, footage continues normally until the next selection's end, then jumps to following selections. Seeking after the final selection lets playback reach the timeline's natural end. Removing a selection also removes its automatic end boundary without interrupting playback. These inspection actions do not add unselected footage to export; use the play controls to preview only kept selections.
 
 Timeline seeks keep playback running even if decoding or UI updates are delayed, or a source resumes at an imprecise timestamp. Newly opened sources initialize their video decoder before seeking. An outstanding still-frame pause cannot override a newer Play request.

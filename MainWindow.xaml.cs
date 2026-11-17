@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? folderCancellation;
     private CancellationTokenSource? thumbnailCancellation;
     private CancellationTokenSource? exportCancellation;
+    private Task folderPlaybackStop = Task.CompletedTask;
     private string? sourceFolder;
     private List<Segment>? preview;
     private int previewIndex;
@@ -101,17 +102,23 @@ public partial class MainWindow : Window
             HwndSource.FromHwnd(new WindowInteropHelper(this).Handle).AddHook(WindowMessageHook);
         player.EncounteredError += Player_EncounteredError;
         player.EndReached += Player_EndReached;
-        Closed += (_, _) =>
+        Closed += async (_, _) =>
         {
+            playbackRevision++;
+            loadedVideo = null;
             folderCancellation?.Cancel();
             thumbnailCancellation?.Cancel();
             exportCancellation?.Cancel();
             timer.Stop();
             thumbnailRefreshTimer.Stop();
-            player.Stop();
             VideoView.MediaPlayer = null;
-            player.Dispose();
-            libVlc.Dispose();
+            await folderPlaybackStop;
+            await Task.Run(() =>
+            {
+                player.Stop();
+                player.Dispose();
+                libVlc.Dispose();
+            });
         };
         UpdateControls();
     }
@@ -120,12 +127,27 @@ public partial class MainWindow : Window
     {
         var dialog = new OpenFolderDialog { Title = "Choose a folder of videos" };
         if (dialog.ShowDialog(this) != true) return;
+        await LoadFolderAsync(dialog.FolderName);
+    }
+
+    private async Task LoadFolderAsync(string folder)
+    {
         folderCancellation?.Cancel();
         thumbnailCancellation?.Cancel();
         thumbnailRefreshTimer.Stop();
         resizeRefreshPending = false;
         ThumbnailLoadingBadge.Visibility = Visibility.Collapsed;
-        StopPlayback();
+        playbackRevision++;
+        playbackMode = PlaybackMode.Stopped;
+        preview = null;
+        pendingSeek = false;
+        bool hadMedia = loadedVideo is not null;
+        loadedVideo = null;
+        FrameCover.Visibility = Visibility.Collapsed;
+        FrameCoverImage.Source = null;
+        coverHideTicks = -1;
+        VideoView.Visibility = Visibility.Hidden;
+        PreviewPlaceholder.Visibility = Visibility.Visible;
         var cancellation = new CancellationTokenSource();
         folderCancellation = cancellation;
         videos.Clear();
@@ -138,14 +160,24 @@ public partial class MainWindow : Window
         TimelineScroll.ScrollToHorizontalOffset(0);
         Thumbnails.Children.Clear();
         DrawRanges();
-        FolderLabel.Text = dialog.FolderName;
-        sourceFolder = dialog.FolderName;
+        FolderLabel.Text = folder;
+        sourceFolder = folder;
         StatusLabel.Text = "Reading video information…";
         try
         {
-            var files = Directory.EnumerateFiles(dialog.FolderName)
-                .Where(MediaTools.IsVideoCandidate)
-                .OrderBy(f => f, new NaturalPathComparer()).ToArray();
+            // LibVLC teardown can wait for window messages, so the dispatcher must stay free.
+            if (hadMedia && folderPlaybackStop.IsCompleted)
+                folderPlaybackStop = Task.Run(() => player.Stop());
+            await folderPlaybackStop;
+            cancellation.Token.ThrowIfCancellationRequested();
+            var files = await Task.Run(() => Directory.EnumerateFiles(folder)
+                .Where(file =>
+                {
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    return MediaTools.IsVideoCandidate(file);
+                })
+                .OrderBy(f => f, new NaturalPathComparer()).ToArray(), cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
             var failures = new List<string>();
             foreach (var file in files)
             {
@@ -754,8 +786,11 @@ public partial class MainWindow : Window
             player.SetPause(false);
             return;
         }
-        CoverWithCurrentFrame();
-        player.Stop();
+        if (loadedVideo is not null)
+        {
+            CoverWithCurrentFrame();
+            player.Stop();
+        }
         player.Mute = true;
         using var media = new LibVLCSharp.Shared.Media(libVlc, new Uri(video.Path));
         // Initialize the decoder before seeking; some streams only provide video headers at the start.
@@ -771,6 +806,7 @@ public partial class MainWindow : Window
 
     private void Timer_Tick(object? sender, EventArgs e)
     {
+        if (!folderPlaybackStop.IsCompleted || loadedVideo is null) return;
         if (coverHideTicks > 0 && !pendingSeek && player.State is VLCState.Playing or VLCState.Paused && --coverHideTicks == 0)
         {
             coverHideTicks = -1;
@@ -844,7 +880,7 @@ public partial class MainWindow : Window
         long revision = playbackRevision;
         Dispatcher.BeginInvoke(() =>
         {
-            if (revision != playbackRevision) return;
+            if (revision != playbackRevision || loadedVideo is null) return;
             StopPlayback();
             StatusLabel.Text = "Playback failed. Check that the source file is accessible and supported.";
         });
@@ -855,7 +891,7 @@ public partial class MainWindow : Window
         long revision = playbackRevision;
         Dispatcher.BeginInvoke(() =>
         {
-            if (revision != playbackRevision || player.State != VLCState.Ended) return;
+            if (revision != playbackRevision || loadedVideo is null || player.State != VLCState.Ended) return;
             if (pendingSeek && loadedVideo is { } seekingVideo)
             {
                 if (seekTarget / 1000d < seekingVideo.Duration - 0.15 || playbackMode != PlaybackMode.Playing)

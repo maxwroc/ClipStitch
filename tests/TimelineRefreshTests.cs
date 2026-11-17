@@ -92,6 +92,75 @@ public class TimelineRefreshTests
     private static T Field<T>(MainWindow window, string name) =>
         (T)typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(100)]
+    [InlineData(800)]
+    public async Task ReopeningFoldersWhilePreviewsLoadRemainsResponsive(int delay)
+    {
+        await WithVideos(async window =>
+        {
+            string source = Field<ObservableCollection<VideoItem>>(window, "videos")[0].Path;
+            string root = Path.GetDirectoryName(source)!;
+            var heartbeat = System.Diagnostics.Stopwatch.StartNew();
+            TimeSpan longestStall = TimeSpan.Zero;
+            var responsivenessTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+            responsivenessTimer.Tick += (_, _) =>
+            {
+                if (heartbeat.Elapsed > longestStall) longestStall = heartbeat.Elapsed;
+                heartbeat.Restart();
+            };
+            responsivenessTimer.Start();
+            for (int i = 0; i < 6; i++)
+            {
+                string folder = Path.Combine(root, $"folder{i}");
+                Directory.CreateDirectory(folder);
+                File.Copy(source, Path.Combine(folder, "video.mp4"));
+                var load = (Task)typeof(MainWindow).GetMethod("LoadFolderAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(window, [folder])!;
+                await load;
+                await Task.Delay(delay);
+            }
+            await AtFrame(window, 0, true);
+            var video = Assert.Single(Field<ObservableCollection<VideoItem>>(window, "videos"));
+            Assert.Same(video, Field<VideoItem>(window, "loadedVideo"));
+            await WaitUntil(() => Field<Grid>(window, "ThumbnailLoadingBadge").Visibility == Visibility.Collapsed);
+            responsivenessTimer.Stop();
+            Assert.True(longestStall < TimeSpan.FromSeconds(2), $"UI stalled for {longestStall.TotalSeconds:F2}s.");
+        });
+    }
+
+    [Fact]
+    public async Task ReplacingFolderCancelsOldLoadsAndReleasesTheOldPreview()
+    {
+        await WithVideos(async window =>
+        {
+            var videos = Field<ObservableCollection<VideoItem>>(window, "videos");
+            string source = videos[0].Path;
+            string root = Path.GetDirectoryName(source)!;
+            Invoke(window, "SeekTo", 3d);
+            await AtFrame(window, 3, true);
+            string empty = Path.Combine(root, "empty");
+            Directory.CreateDirectory(empty);
+            Task Load(string folder) =>
+                (Task)typeof(MainWindow).GetMethod("LoadFolderAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(window, [folder])!;
+
+            var oldLoad = Load(root);
+            var emptyLoad = Load(empty);
+            await Task.WhenAll(oldLoad, emptyLoad);
+            Assert.Empty(videos);
+            Assert.Null(typeof(MainWindow).GetField("loadedVideo", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window));
+            Assert.Null(Field<Image>(window, "FrameCoverImage").Source);
+            Assert.Equal(Visibility.Visible, Field<Grid>(window, "PreviewPlaceholder").Visibility);
+            Assert.Equal(VLCState.Stopped, Field<LibVLCSharp.Shared.MediaPlayer>(window, "player").State);
+            await Load(root);
+            await AtFrame(window, 0, true);
+            Assert.Equal(2, videos.Count);
+            Assert.Equal(root, Path.GetDirectoryName(videos[0].Path));
+        });
+    }
+
     [Fact]
     public async Task StartupPlaceholderGivesWayToTheVideoPreview()
     {
